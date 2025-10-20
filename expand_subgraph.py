@@ -1,4 +1,3 @@
-import openai 
 import pickle as pkl
 import random
 from dotenv import load_dotenv
@@ -8,25 +7,25 @@ from gen_query import extract_numbers, extract_strings, extract_notations
 load_dotenv()
 
 
-with open("/knowledge_graph/KG_data/FB15k-237-betae/train-queries.pkl", "rb") as f:
+with open("knowledge_graph/KG_data/FB15k-237-betae/train-queries.pkl", "rb") as f:
     queries = pkl.load(f)
-with open("/knowledge_graph/KG_data/FB15k-237-betae/train-answers.pkl", "rb") as f:
+with open("knowledge_graph/KG_data/FB15k-237-betae/train-answers.pkl", "rb") as f:
     answer_train = pkl.load(f)
-with open("/knowledge_graph/KG_data/FB15k-237-betae/valid-easy-answers.pkl", "rb") as f:
+with open("knowledge_graph/KG_data/FB15k-237-betae/valid-easy-answers.pkl", "rb") as f:
     answer_valid = pkl.load(f)
-with open("/knowledge_graph/KG_data/FB15k-237-betae/test-easy-answers.pkl", "rb") as f:
+with open("knowledge_graph/KG_data/FB15k-237-betae/test-easy-answers.pkl", "rb") as f:
     answer_test = pkl.load(f)
 
-with open("/knowledge_graph/KG_data/FB15k-237-betae/train.txt", "r") as f:
+with open("knowledge_graph/KG_data/FB15k-237-betae/train.txt", "r") as f:
     train_graph = f.readlines()
 
-with open("/knowledge_graph/KG_data/FB15k-237-betae/id2ent.pkl", "rb") as f:
+with open("knowledge_graph/KG_data/FB15k-237-betae/id2ent.pkl", "rb") as f:
     id2ent = pkl.load(f)
-with open("/knowledge_graph/KG_data/FB15k-237-betae/id2rel.pkl", "rb") as f:
+with open("knowledge_graph/KG_data/FB15k-237-betae/id2rel.pkl", "rb") as f:
     id2rel = pkl.load(f)
-with open("/knowledge_graph/KG_data/FB15k-237-betae/ent2id.pkl", "rb") as f:
+with open("knowledge_graph/KG_data/FB15k-237-betae/ent2id.pkl", "rb") as f:
     ent2id = pkl.load(f)
-with open("/knowledge_graph/KG_data/FB15k-237-betae/FB15k_mid2name.txt", "r") as f:
+with open("knowledge_graph/KG_data/FB15k-237-betae/FB15k_mid2name.txt", "r") as f:
     ent2name = {}
     for line in f:
         mid, name = line.strip().split("\t")
