@@ -2,3 +2,6 @@ knowledge_graph/*
 t.ipynb
 gen_query.py
 .env
+.vscode/
+__pycache__/
+a.py

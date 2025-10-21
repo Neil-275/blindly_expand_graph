@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 import prompt_list
 import torch
 from gen_query import extract_numbers, extract_strings, extract_notations
+from typing import Literal
 load_dotenv()
 
 
@@ -65,6 +66,7 @@ class ExpandSubgraph:
         self.util = util
         self.queries = query['transformed_query']
         self.raw_query = query['raw_query']
+        self.query_type = query['query_type']
         nums = extract_numbers(query['raw_query'])
         notations = extract_notations(query['query_type'])
         # print(nums, notations)
@@ -74,115 +76,147 @@ class ExpandSubgraph:
             if notations[i] == 'e':
                 self.start_entities.append(nums[i])
         self.k = k
-        self.adjacency_list = self.build_adjacency_list()
+        self.dir_adj, self.inv_adj = self.build_adjacency_list()
         self.depth = depth
         self.fuse_func = fuse_func
         self.subgraph_value = None
-        self.subgraph_key = None
+        self.subgraph_key = {'direct': [], 'inverse': []}
         self.answers_id = None
+        self._name_cache = {}
 
     def build_adjacency_list(self):
-        adj = {}
-        for edges in train_graph:
-            head, rel, tail = edges.strip().split('\t')
-            head, rel, tail = int(head), int(rel), int(tail)
-            if head not in adj:
-                adj[head] = []
-            adj[head].append((rel, tail))
-        return adj
+        """
+        Currently separating direct and inverse edges.
+        Optimized to use defaultdict for better performance.
+        """
+        print("Building adjacency list...")
+        from collections import defaultdict
+        
+        dir_adj = defaultdict(list)
+        inv_adj = defaultdict(list)
+        
+        for i, edges in enumerate(train_graph):
+            head, rel, tail = map(int, edges.strip().split('\t'))
+            if i % 2 == 0:
+                dir_adj[head].append((rel, tail))
+            else:
+                inv_adj[head].append((rel, tail))
+        
+        # Convert back to regular dict if needed
+        return dict(dir_adj), dict(inv_adj)
 
     def id2name(self, idx):
-        return ent2name[id2ent[idx]]
+        """Cached version to avoid repeated dictionary lookups."""
+        if idx not in self._name_cache:
+            self._name_cache[idx] = ent2name[id2ent[idx]]
+        return self._name_cache[idx]
 
-    def compare_rel_query_and_return_topk(self, triplets, queries, fuse_func=fuse_mean, k=5):
+    def compare_rel_query_and_return_topk(self, triplets, queries, fuse_func=fuse_mean, ):
         if type(triplets) is not list:
             triplets = [triplets]
         if type(queries) is not list:
             queries = [queries] 
-        # print(triplets)
-        rels = [id2rel[rel_id] for _, rel_id, _ in triplets]
+        
+        # Get unique relations and create mapping
+        unique_rel_ids = list(set(triplet[1] for triplet in triplets))
+        rel_names = [id2rel[rel_id] for rel_id in unique_rel_ids]
 
-        rels_emb = self.model.encode(rels)
+        rels_emb = self.model.encode(rel_names)
         queries_emb = self.model.encode(queries)
         scores = self.util.dot_score(queries_emb, rels_emb)
-        top_k = self.return_top_k(scores, k=k, fuse_func=fuse_func)
-        triplets = [triplets[idx] for idx in top_k]
-        return triplets
+        top_k_indices = self.return_top_k(scores, fuse_func=fuse_func)
+        selected_rels = [rel_names[idx] for idx in top_k_indices]
+        rel_order = {rel_names[idx]: rank for rank, idx in enumerate(top_k_indices)}
+        # print("rel_order:", rel_order)
+        # Filter and sort triplets
+        filtered_triplets = [triplet for triplet in triplets 
+                            if id2rel[triplet[1]] in selected_rels]
+        
+        # Sort by the ranking from top-k
+        sorted_triplets = sorted(filtered_triplets, 
+                            key=lambda x: rel_order.get(id2rel[x[1]], float('inf')))
+        # print("sorted_triplets:", sorted_triplets)
+        return sorted_triplets[:self.k]
 
 
-    def return_top_k(self, scores, k=5, fuse_func=fuse_mean):
+    def return_top_k(self, scores, fuse_func=fuse_mean):
         scores = fuse_func(scores)
-        sorted_scores, sorted_indices = torch.sort(scores, descending=True)
-        return [idx for idx in sorted_indices.tolist()[0][:k]]
+        k = min(self.k, scores.shape[1])
+        scores, sorted_indices = torch.topk(scores, k, largest=True, dim=-1)
+        # print("scores:", scores, "sorted_indices:", sorted_indices)
+        return sorted_indices[0].tolist()
 
-    def expand_subgraph(self):
-        start_entities = self.start_entities.copy()
-        self.subgraph_key = []
+    def expand_subgraph(self, adj_type: Literal["direct", "inverse"] = "direct"):
+        print("Expanding", adj_type, "subgraph...")
+        if adj_type == "direct":
+            adjacency_list = self.dir_adj
+        else:
+            adjacency_list = self.inv_adj
+        
+        start_entities = set(self.start_entities.copy())
+        self.subgraph_key[adj_type] = []
 
         for depth in range(self.depth):
             triplets = []
-            print("depth:", depth)
+            print("depth:", depth, end="\t")
             print(len(start_entities), "entities to expand.")
             for head_id in start_entities:
-                head = self.id2name(head_id)
-                if head == "UnName_Entity":
+                # head = self.id2name(head_id)
+                # if head == "UnName_Entity":
+                #     continue
+                if head_id not in adjacency_list.keys():
+                    # print(f"No outgoing edges for entity {head}.")
                     continue
-                if head_id not in self.adjacency_list.keys():
-                    print(f"No outgoing edges for entity {head}.")
-                    continue
-                edges = [(head_id, rel_id, tail_id) for rel_id, tail_id in self.adjacency_list[head_id]]
+                edges = [(head_id, rel_id, tail_id) for rel_id, tail_id in adjacency_list[head_id]]
                 triplets.extend(edges)
 
             triplets = [triplet for  triplet in triplets if self.id2name(triplet[2]) != "UnName_Entity"]
-            print(len(triplets), "triplets found.")
-            triplets = self.compare_rel_query_and_return_topk(triplets, self.queries, fuse_func=self.fuse_func, k=self.k)
+            # print(len(triplets), "triplets found.")
+            triplets = self.compare_rel_query_and_return_topk(
+                triplets, self.queries, fuse_func=self.fuse_func)
             print(f"Selected {len(triplets)} triplets to expand.")
             if len(triplets) == 0:
-                print("No more edges to expand.")
+                # print("No more edges to expand.")
                 break
             if len(triplets) > self.k:
                 triplets = random.sample(triplets, self.k)
-            self.subgraph_key.extend(triplets)
-            start_entities = list(set([tail_id for _,_,tail_id in triplets if self.id2name(tail_id) != "UnName_Entity"]))
-            # entity_candidates = [candidate for candidate in entity_candidates if candidate != "UnName_Entity"]
-            # print(f"Expanded to {len(start_entities)} entities.")
+            self.subgraph_key[adj_type].extend(triplets)
+            start_entities = {tail_id for _, _, tail_id in triplets}
 
     def evaluate_subgraph(self, type_eval="train"):
-        # pass
-        if self.subgraph_key is None:
-            self.expand_subgraph()
-        print("subgraph has", len(self.subgraph_key), "triplets.")
+        if 'direct' not in self.subgraph_key or not self.subgraph_key['direct']:
+            self.expand_subgraph("direct")
+        if 'inverse' not in self.subgraph_key or not self.subgraph_key['inverse']:
+            self.expand_subgraph("inverse")
+        subgraph_key = self.subgraph_key['direct'] + self.subgraph_key['inverse']
+        print("subgraph has", len(subgraph_key), "triplets.")
         # print(self.subgraph_key[:3])
-        self.answers_id = answer_train[self.raw_query]
-        if type_eval == "valid" or type_eval == "test":
-            self.answers_id = self.answers_id.union(answer_valid[self.raw_query])
-        if type_eval == "test":
-            self.answers_id = self.answers_id.union(answer_test[self.raw_query])
-        
-        self.answers_id = list(self.answers_id)
-
         entities_id = set()
         rels = set()
-        for h,r,t in self.subgraph_key:
+        for h,r,t in subgraph_key:
             entities_id.add(h)
             entities_id.add(t)
             rels.add(r)
-        # return entities
-
-        entity_score = 0
-        for answer_id in self.answers_id:
-            # print(answer)
-            if answer_id  in entities_id:
-                # print(f"Found answer entity {ent2name[answer]} in the subgraph.")
-                entity_score += 1
-        entity_score /= len(self.answers_id)
-        relation_score = 0
-        # for rel in rels:
-        #     print(rel)
-        #     rel = rel2id[rel]
-
-            # if rel in rels:
-            #     # print(f"Found answer relation {id2rel[rel]} in the subgraph.")
-            #     relation_score += 1
-        relation_score /= len(self.queries)
+        entity_score = self.evaluate_ans_coverage(entities_id, type_eval=type_eval)
+        relation_score = self.evaluate_rel_coverage(rels, type_eval=type_eval)
         return entity_score, relation_score
+
+    def evaluate_ans_coverage(self, entities_id, type_eval="train"):
+        answers_id = answer_train[self.raw_query]
+        if type_eval == "valid" or type_eval == "test":
+            answers_id = answers_id.union(answer_valid[self.raw_query])
+        if type_eval == "test":
+            answers_id = answers_id.union(answer_test[self.raw_query])
+
+        entity_score = len(answers_id.intersection(entities_id)) / len(answers_id)
+
+        return entity_score
+
+    def evaluate_rel_coverage(self, rels, type_eval="train"):
+        # print(self.raw_query)
+        notations = extract_notations(self.query_type)
+        rels_ans = extract_numbers(self.raw_query)
+        rels_ans = set([rel for i, rel in enumerate(rels_ans) if notations[i] == 'r'])
+
+        relation_score = len(rels_ans.intersection(rels)) / len(rels_ans)
+        return  relation_score
