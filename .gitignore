@@ -3,5 +3,6 @@ t.ipynb
 gen_query.py
 .env
 .vscode/
-__pycache__/
+__pycache__
 a.py
+experiment_results/

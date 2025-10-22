@@ -13,9 +13,13 @@ with open("knowledge_graph/KG_data/FB15k-237-betae/train-queries.pkl", "rb") as 
 with open("knowledge_graph/KG_data/FB15k-237-betae/train-answers.pkl", "rb") as f:
     answer_train = pkl.load(f)
 with open("knowledge_graph/KG_data/FB15k-237-betae/valid-easy-answers.pkl", "rb") as f:
-    answer_valid = pkl.load(f)
+    answer_valid_easy = pkl.load(f)
+with open("knowledge_graph/KG_data/FB15k-237-betae/valid-hard-answers.pkl", "rb") as f:
+    answer_valid_hard = pkl.load(f)
 with open("knowledge_graph/KG_data/FB15k-237-betae/test-easy-answers.pkl", "rb") as f:
-    answer_test = pkl.load(f)
+    answer_test_easy = pkl.load(f)
+with open("knowledge_graph/KG_data/FB15k-237-betae/test-hard-answers.pkl", "rb") as f:
+    answer_test_hard = pkl.load(f)
 
 with open("knowledge_graph/KG_data/FB15k-237-betae/train.txt", "r") as f:
     train_graph = f.readlines()
@@ -61,10 +65,13 @@ def fuse_rrf(scores, k=10):
 
 
 class ExpandSubgraph:
+
+    dir_adj, inv_adj = None, None
     def __init__(self, model, util, query, fuse_func=fuse_mean, depth=5, k=10):
         self.model = model
         self.util = util
         self.queries = query['transformed_query']
+        self.queries_emb = self.model.encode(self.queries)
         self.raw_query = query['raw_query']
         self.query_type = query['query_type']
         nums = extract_numbers(query['raw_query'])
@@ -76,7 +83,8 @@ class ExpandSubgraph:
             if notations[i] == 'e':
                 self.start_entities.append(nums[i])
         self.k = k
-        self.dir_adj, self.inv_adj = self.build_adjacency_list()
+        if ExpandSubgraph.dir_adj is None or ExpandSubgraph.inv_adj is None:
+            ExpandSubgraph.dir_adj, ExpandSubgraph.inv_adj = self.build_adjacency_list()
         self.depth = depth
         self.fuse_func = fuse_func
         self.subgraph_value = None
@@ -103,7 +111,7 @@ class ExpandSubgraph:
                 inv_adj[head].append((rel, tail))
         
         # Convert back to regular dict if needed
-        return dict(dir_adj), dict(inv_adj)
+        return dir_adj, inv_adj
 
     def id2name(self, idx):
         """Cached version to avoid repeated dictionary lookups."""
@@ -122,8 +130,7 @@ class ExpandSubgraph:
         rel_names = [id2rel[rel_id] for rel_id in unique_rel_ids]
 
         rels_emb = self.model.encode(rel_names)
-        queries_emb = self.model.encode(queries)
-        scores = self.util.dot_score(queries_emb, rels_emb)
+        scores = self.util.dot_score(self.queries_emb, rels_emb)
         top_k_indices = self.return_top_k(scores, fuse_func=fuse_func)
         selected_rels = [rel_names[idx] for idx in top_k_indices]
         rel_order = {rel_names[idx]: rank for rank, idx in enumerate(top_k_indices)}
@@ -147,7 +154,7 @@ class ExpandSubgraph:
         return sorted_indices[0].tolist()
 
     def expand_subgraph(self, adj_type: Literal["direct", "inverse"] = "direct"):
-        print("Expanding", adj_type, "subgraph...")
+        # print("Expanding", adj_type, "subgraph...")
         if adj_type == "direct":
             adjacency_list = self.dir_adj
         else:
@@ -158,8 +165,8 @@ class ExpandSubgraph:
 
         for depth in range(self.depth):
             triplets = []
-            print("depth:", depth, end="\t")
-            print(len(start_entities), "entities to expand.")
+            # print("depth:", depth, end="\t")
+            # print(len(start_entities), "entities to expand.")
             for head_id in start_entities:
                 # head = self.id2name(head_id)
                 # if head == "UnName_Entity":
@@ -172,16 +179,19 @@ class ExpandSubgraph:
 
             triplets = [triplet for  triplet in triplets if self.id2name(triplet[2]) != "UnName_Entity"]
             # print(len(triplets), "triplets found.")
+            if triplets == []:
+                # print("No triplets to expand.")
+                continue
             triplets = self.compare_rel_query_and_return_topk(
                 triplets, self.queries, fuse_func=self.fuse_func)
-            print(f"Selected {len(triplets)} triplets to expand.")
+            # print(f"Selected {len(triplets)} triplets to expand.")
             if len(triplets) == 0:
                 # print("No more edges to expand.")
                 break
             if len(triplets) > self.k:
                 triplets = random.sample(triplets, self.k)
             self.subgraph_key[adj_type].extend(triplets)
-            start_entities = {tail_id for _, _, tail_id in triplets}
+            start_entities = {triplet[2] for triplet in triplets}
 
     def evaluate_subgraph(self, type_eval="train"):
         if 'direct' not in self.subgraph_key or not self.subgraph_key['direct']:
@@ -189,7 +199,7 @@ class ExpandSubgraph:
         if 'inverse' not in self.subgraph_key or not self.subgraph_key['inverse']:
             self.expand_subgraph("inverse")
         subgraph_key = self.subgraph_key['direct'] + self.subgraph_key['inverse']
-        print("subgraph has", len(subgraph_key), "triplets.")
+        # print("subgraph has", len(subgraph_key), "triplets.")
         # print(self.subgraph_key[:3])
         entities_id = set()
         rels = set()
@@ -197,16 +207,17 @@ class ExpandSubgraph:
             entities_id.add(h)
             entities_id.add(t)
             rels.add(r)
+        # print("subgraph has", len(entities_id), "unique entities and", len(rels), "relation types.")
         entity_score = self.evaluate_ans_coverage(entities_id, type_eval=type_eval)
         relation_score = self.evaluate_rel_coverage(rels, type_eval=type_eval)
         return entity_score, relation_score
 
     def evaluate_ans_coverage(self, entities_id, type_eval="train"):
-        answers_id = answer_train[self.raw_query]
+        answers_id = answer_train[self.raw_query].union(answer_valid_easy[self.raw_query])
         if type_eval == "valid" or type_eval == "test":
-            answers_id = answers_id.union(answer_valid[self.raw_query])
-        if type_eval == "test":
-            answers_id = answers_id.union(answer_test[self.raw_query])
+            answers_id = answers_id.union(answer_valid_hard[self.raw_query])
+        if type_eval == "test": # chưa đụng tới
+            answers_id = answers_id.union(answer_test_hard[self.raw_query])
 
         entity_score = len(answers_id.intersection(entities_id)) / len(answers_id)
 
