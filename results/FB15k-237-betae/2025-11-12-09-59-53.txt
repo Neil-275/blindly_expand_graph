@@ -1,0 +1,1 @@
+Namespace(data_path='knowledge_graph/KG_data/FB15k-237-betae', seed=1234, k=6, depth=8, gpu=0, fact_ratio=0.75, val_num=-1, epoch=200, layer=6, batchsize=16, cpu=1, weight='', add_manual_edges=False, remove_1hop_edges=False, only_eval=False, not_shuffle_train=False, perf_file='results\\FB15k-237-betae\\2025-11-12-09-59-53.txt', n_batch=16, n_tbatch=16)

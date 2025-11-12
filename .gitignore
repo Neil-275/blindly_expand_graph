@@ -6,3 +6,8 @@ gen_query.py
 __pycache__
 a.py
 experiment_results/
+model.py
+gnn_module.py
+reasoning_module.py
+create_queries.py
+data/
