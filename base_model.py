@@ -22,7 +22,7 @@ class BaseModel(object):
         self.n_ent = loader.n_ent
         # self.n_samp_ent = args.n_samp_ent
         self.n_rel = loader.n_rel
-        self.train_sampler, self.test_sampler = samplers
+        self.train_sampler, self.val_sampler, self.test_sampler = samplers
         self.trainLoader = DataLoader(loader, batch_size=args.n_batch, num_workers=0, collate_fn=loader.collate_fn, shuffle=False, prefetch_factor=None, pin_memory=True)
         self.valLoader = DataLoader(val_loader, batch_size=args.n_tbatch, num_workers=0, collate_fn=val_loader.collate_fn, shuffle=False, prefetch_factor=None, pin_memory=True)
         self.testLoader = DataLoader(test_loader, batch_size=args.n_tbatch, num_workers=0, collate_fn=test_loader.collate_fn, shuffle=False, prefetch_factor=None, pin_memory=True)
@@ -66,7 +66,7 @@ class BaseModel(object):
         reach_tails_list = []
         t_time = time.time()
         self.model.train()
-        print("Training...")
+        # print("Training...")
         # print("len(self.trainLoader):", len(self.trainLoader))
         for batch_data in tqdm(self.trainLoader, ncols=50, leave=False):                      
             # prepare data    

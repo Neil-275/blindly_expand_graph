@@ -146,3 +146,41 @@ def select_gpu():
         if gpu_mem[i] == min(gpu_mem):
             logging.info('All GPUs are occupied. Automatically selected GPU %d because it has the most free memory.', i)
             return i
+        
+def calculate_statistics(data):
+    """
+    Calculates descriptive statistics for a given array-like object.
+
+    Args:
+        data (array-like): A list or NumPy array of numerical data.
+
+    Returns:
+        dict: A dictionary containing the statistics, or a dictionary of Nones if the input is empty.
+    """
+    # Ensure data is a numpy array
+    data_arr = np.asarray(data)
+
+    # Handle empty array
+    if data_arr.size == 0:
+        return {
+            'count': 0,
+            'mean': None,
+            'median': None,
+            'std_dev': None,
+            'min': None,
+            'max': None,
+            '25th_percentile': None,
+            '75th_percentile': None
+        }
+
+    stats = {
+        'count': data_arr.size,
+        'mean': np.mean(data_arr),
+        'median': np.median(data_arr),
+        'std_dev': np.std(data_arr),
+        'min': np.min(data_arr),
+        'max': np.max(data_arr),
+        '25th_percentile': np.percentile(data_arr, 25),
+        '75th_percentile': np.percentile(data_arr, 75)
+    }
+    return stats

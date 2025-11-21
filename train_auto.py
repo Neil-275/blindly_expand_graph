@@ -27,6 +27,7 @@ parser.add_argument('--add_manual_edges', action='store_true')
 parser.add_argument('--remove_1hop_edges', action='store_true')
 parser.add_argument('--only_eval', action='store_true')
 parser.add_argument('--not_shuffle_train', action='store_true')
+parser.add_argument('--device', type=str, default='cuda')
 args = parser.parse_args()
 
 class Options(object):
@@ -69,35 +70,37 @@ if __name__ == '__main__':
     
     # build ppr sampler here
     # number of sampled entities
-    args.branching_factor = args.k
-    args.depth = args.depth
-    print(f'==> #branching factor:{args.branching_factor}, #depth:{args.depth}')
-    
-    # sampler for testing
-    test_data = loader.double_triple(loader.all_triple)
-    test_homo_edges = list(set([(h,t) for (h,r,t) in test_data]))
-    # test_data = np.concatenate([np.array(test_data, dtype=np.int32), loader.idd_data], 0, dtype=np.int32)
-    test_data = np.array(test_data, dtype=np.int32)
-    test_sampler = ExpandSubgraph(args.n_ent, args.n_rel,test_homo_edges,test_data,
-                                   args=args, k=args.branching_factor, depth=args.depth)
-                                   
-
-    del test_homo_edges
+    print(f'==> #branching factor: {args.k}, #depth: {args.depth}')
     
     # sampler for training
-    fact_homo_edges = list(set([(h,t) for (h,r,t) in loader.fact_data]))
+    train_graph_homo = list(set([(h,t) for (h,r,t) in loader.train_graph]))
     # fact_data = np.concatenate([np.array(loader.fact_data, dtype=np.int32), loader.idd_data], 0, dtype=np.int32)
-    fact_data = np.array(loader.fact_data, dtype=np.int32)
-    train_sampler = ExpandSubgraph(args.n_ent, args.n_rel,fact_homo_edges,fact_data,
-                                   args=args, k=args.branching_factor, depth=args.depth)
+    train_graph = np.array(loader.train_graph, dtype=np.int32)
+    train_sampler = ExpandSubgraph(args.n_ent, args.n_rel,train_graph_homo,train_graph,
+                                   args=args, k=args.k, depth=args.depth)
 
-    del fact_homo_edges
+
+    # sampler for
+    val_graph_homo = list(set([(h,t) for (h,r,t) in loader.val_graph]))
+    # test_data = np.concatenate([np.array(test_data, dtype=np.int32), loader.idd_data], 0, dtype=np.int32)
+    val_graph = np.array(loader.val_graph, dtype=np.int32)
+    val_sampler = ExpandSubgraph(args.n_ent, args.n_rel,val_graph_homo,val_graph,
+                                   args=args, k=args.k, depth=args.depth)
+
+
+    # sampler for validation
+    test_graph_homo = list(set([(h,t) for (h,r,t) in loader.test_graph]))
+    # test_data = np.concatenate([np.array(test_data, dtype=np.int32), loader.idd_data], 0, dtype=np.int32)
+    test_graph = np.array(loader.test_graph, dtype=np.int32)
+    test_sampler = ExpandSubgraph(args.n_ent, args.n_rel,test_graph_homo,test_graph,
+                                   args=args, k=args.k, depth=args.depth)
+                                   
+
         
     # add sampler to the data loaders
     loader.addSampler(train_sampler)
-    val_loader.addSampler(test_sampler)
+    val_loader.addSampler(val_sampler)
     test_loader.addSampler(test_sampler)
-    # print("97")
     # check all output paths
     checkPath('./results/')
     checkPath(f'./results/{dataset}/')
@@ -120,7 +123,7 @@ if __name__ == '__main__':
         args.readout = params['readout']
         
         # build model
-        model = BaseModel(args, loaders=(loader, val_loader, test_loader), samplers=(train_sampler, test_sampler))
+        model = BaseModel(args, loaders=(loader, val_loader, test_loader), samplers=(train_sampler, val_sampler, test_sampler))
         
         # load pretrained weight
         if args.weight != '': 
