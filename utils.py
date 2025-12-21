@@ -5,6 +5,10 @@ from scipy.stats import rankdata
 import subprocess
 import logging
 import os
+from pydantic import BaseModel
+import torch
+
+client = openai.OpenAI()
 
 def extract_numbers(t):
     """Recursively extract all numbers from nested tuples into a flat list."""
@@ -43,29 +47,55 @@ def extract_answer(text):
     else:
         return ""
 
-def run_llm(prompt, system_prompt, max_tokens=500, temperature=0.5, engine="gpt-4o-mini"):
+class SubobjectiveOutput(BaseModel):
+    res: list[str]
+
+def run_llm(prompt, system_prompt="You are a helpful assistant.", max_tokens=500,
+             temperature=0.5, engine="gpt-4o-mini", sub_objective = False):
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": prompt}
     ]
-
+    
     # while True:
     result = []
-    try:
-        response = openai.chat.completions.create(
-            model=engine,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            frequency_penalty=0,
-            presence_penalty=0
-        )
-        result = response.choices[0].message.content
-        # break
-    except Exception as e:
-        print(f"openai error, retry: {e}")
-        time.sleep(2)
-    print("_______end openai")
+    while True:
+        try:
+            if sub_objective:
+                response = client.responses.parse(
+                    model=engine,
+                    input=messages,
+                    temperature=temperature,
+                    text_format = SubobjectiveOutput,
+                )
+                
+                result = response.output_parsed.res
+                # print("response:", response)
+                # if response.content == "refusal":
+                #     print("Refusal detected, retrying...")
+                #     time.sleep(2)
+                # continue
+                break
+            else:
+                response = openai.chat.completions.create(
+                    model=engine,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    frequency_penalty=0,
+                    presence_penalty=0,
+                    
+                )
+                result = response.choices[0].message.content
+            # break
+            time.sleep(1)
+            
+            break
+        except Exception as e:
+            print(f"openai error, retry: {e}")
+            time.sleep(2)
+    
+    # print("_______end openai")
     return result
 
 
@@ -184,3 +214,26 @@ def calculate_statistics(data):
         '75th_percentile': np.percentile(data_arr, 75)
     }
     return stats
+
+def fuse_mean(scores):
+    ls = scores.unbind(dim = 0)
+    res = torch.zeros(1,scores.shape[1])
+    n = scores.shape[0]
+    for l in ls:
+        res += l / n 
+    return res
+
+def fuse_rrf(scores, k=5):
+    ls = scores.unbind(dim=0)
+    dict_scores = {}
+    for l in ls:
+        _, indices = torch.sort(l, descending=True)
+        for i in range(scores.shape[1]):
+            if indices[i].item() not in dict_scores:
+                dict_scores[indices[i].item()] = []
+            dict_scores[indices[i].item()].append(i + 1)
+
+    for key in dict_scores:
+        dict_scores[key] = sum([1/(k + rank) for rank in dict_scores[key]])
+    scores = torch.tensor([list(dict_scores.values())])
+    return scores

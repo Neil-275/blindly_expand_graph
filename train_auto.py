@@ -85,7 +85,7 @@ if __name__ == '__main__':
     # test_data = np.concatenate([np.array(test_data, dtype=np.int32), loader.idd_data], 0, dtype=np.int32)
     val_graph = np.array(loader.val_graph, dtype=np.int32)
     val_sampler = ExpandSubgraph(args.n_ent, args.n_rel,val_graph_homo,val_graph,
-                                   args=args, k=args.k, depth=args.depth)
+                                   args=args)
 
 
     # sampler for validation
@@ -93,8 +93,8 @@ if __name__ == '__main__':
     # test_data = np.concatenate([np.array(test_data, dtype=np.int32), loader.idd_data], 0, dtype=np.int32)
     test_graph = np.array(loader.test_graph, dtype=np.int32)
     test_sampler = ExpandSubgraph(args.n_ent, args.n_rel,test_graph_homo,test_graph,
-                                   args=args, k=args.k, depth=args.depth)
-                                   
+                                    args=args)
+                                    
 
         
     # add sampler to the data loaders
@@ -178,5 +178,5 @@ if __name__ == '__main__':
         params = {'lr': 0.001, 'hidden_dim': 64, 'attn_dim': 2, 'n_layer': 8, 'act': 'relu', 'initializer': 'binary', 'concatHidden': True, 'shortcut': False, 'readout': 'linear', 'decay_rate': 0.9429713470775948, 'lamb': 0.000946516892415447, 'dropout': 0.19456805575101324}
     else:
         exit()
-    print("175")
+    # print("175")
     run_model(params)

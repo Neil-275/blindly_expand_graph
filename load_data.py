@@ -91,7 +91,7 @@ class DataLoader(Dataset):
         self.assignQuery = self.sampler.assign_query
 
     def __len__(self):
-        return self.len
+        return self.len_query
 
 
     def __getitem__(self, idx):
@@ -122,7 +122,6 @@ class DataLoader(Dataset):
             sub = torch.LongTensor([sub]).unsqueeze(0) # shape: (1, 1)
             rel = torch.LongTensor([rel]).unsqueeze(0)
             obj = torch.LongTensor(obj).unsqueeze(0)
-            
 
         # subgraph sampling
         query = create_query(sub.item(), rel.item(), obj)
@@ -190,13 +189,18 @@ class DataLoader(Dataset):
         # queries = np.array(queries)
         return queries, answers
     
-    def shuffle_train(self):
+    def shuffle_train(self, fact_ratio=None):
         # print('shuffle training set...')
         all_triple = np.array(self.all_train_triples)
         n_all = len(all_triple)
+        if fact_ratio is None:
+            fact_ratio = int(n_all * self.args.fact_ratio)
+        else:
+            fact_ratio = int(len(self.all_train_triples) * fact_ratio)
+        
         rand_idx = np.random.permutation(n_all)
         all_triple = all_triple[rand_idx]
-        fact_ratio = int(n_all * self.args.fact_ratio)
+        
         fact_data = np.array(self.double_triple(all_triple[:fact_ratio].tolist()))
         train_data = np.array(self.double_triple(all_triple[fact_ratio:].tolist()))
         
@@ -207,10 +211,12 @@ class DataLoader(Dataset):
             save_facts = tmp_index[fact_data[:, 0], fact_data[:, 2]].astype(bool)
             self.train_graph = self.double_triple(fact_data[save_facts].tolist())
             print('==> done')
+        else:
+            self.train_graph = self.double_triple(fact_data.tolist())
 
         # update
         self.n_train = len(train_data)
-        self.len = len(train_data)        
+        self.len_query = len(train_data)        
         
         # shuffle training data
         n_all = len(train_data)

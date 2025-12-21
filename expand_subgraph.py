@@ -3,11 +3,13 @@ import random
 from dotenv import load_dotenv
 import prompt_list
 import torch
-from utils import extract_numbers, extract_strings, extract_notations
+from utils import extract_numbers, extract_strings, extract_notations, run_llm, extract_answer,fuse_mean, fuse_rrf
 from typing import Literal
 import numpy as np
 load_dotenv()
-
+from queue import Queue
+from ast import literal_eval
+from sentence_transformers import SentenceTransformer, util
 
 
 # with open("knowledge_graph/KG_data/FB15k-237-betae/train.txt", "r") as f:
@@ -15,32 +17,10 @@ load_dotenv()
 
 
 
-from sentence_transformers import SentenceTransformer, util
 
 
 
-def fuse_mean(scores):
-    ls = scores.unbind(dim = 0)
-    res = torch.zeros(1,scores.shape[1])
-    n = scores.shape[0]
-    for l in ls:
-        res += l / n 
-    return res
 
-def fuse_rrf(scores, k=10):
-    ls = scores.unbind(dim=0)
-    dict_scores = {}
-    for l in ls:
-        _, indices = torch.sort(l, descending=True)
-        for i in range(scores.shape[1]):
-            if indices[i].item() not in dict_scores:
-                dict_scores[indices[i].item()] = []
-            dict_scores[indices[i].item()].append(i + 1)
-
-    for key in dict_scores:
-        dict_scores[key] = sum([1/(k + rank) for rank in dict_scores[key]])
-    scores = torch.tensor([list(dict_scores.values())])
-    return scores
 
 
 
@@ -68,39 +48,61 @@ class ExpandSubgraph:
 
     adj = None
     rel_embs = None
-    def __init__(self, n_ent: int, n_rel: int, homoEdges: list, edge_index: list, args=None, depth=5, k=10, fuse_func=fuse_mean):
+    def __init__(self, n_ent: int, n_rel: int, homoEdges: list, edge_index: np.array, args=None,
+                  fuse_func=fuse_mean,
+                  use_sub_objectives_a=False,
+                  use_sub_objectives_b=False):
         # not using homoEdges currently
+        self.args = args
         self.model = ExpandSubgraph.model.to(args.device)
         self.util = util
-        self.k = k
+        self.k = args.k
+        self.cands_lim = args.cands_lim
         # print("type(edge_index):", type(edge_index))
-        self.edge_index = edge_index
+        self.edge_index = np.array(edge_index)
         if ExpandSubgraph.adj is None:
             ExpandSubgraph.adj = self.build_adjacency_list()
         if ExpandSubgraph.rel_embs is None:
-            ExpandSubgraph.rel_embs = self.model.encode(list(ExpandSubgraph.id2rel.values()))
-        self.depth = depth
+            ExpandSubgraph.rel_embs = self.model.encode(list(ExpandSubgraph.id2rel.values()), convert_to_tensor=True).to(self.args.device)
         self.query = None
         self.fuse_func = fuse_func
         self.subgraph_key = None
         self.answers_id = None
         self._name_cache = {}
         self.visited = set()
-        self.args = args
+        
+        if use_sub_objectives_a or use_sub_objectives_b:
+            self.fuse_func = fuse_rrf
+        self.use_sub_objectives_a = use_sub_objectives_a
+        self.use_sub_objectives_b = use_sub_objectives_b
+        self.sub_objectives = None
+
+    def extract_subobjectives(self, query):
+        if self.use_sub_objectives_a:
+            subobjective_prompt_filled = prompt_list.subobjective_prompt + query[0] + "\nOutput: "
+        elif self.use_sub_objectives_b:
+            subobjective_prompt_filled = prompt_list.subobjective_prompt2 + query[0] + "\nOutput: "
+
+        # print("Extracting subobjectives with prompt:\n", subobjective_prompt_filled)
+        subobjectives  = run_llm(subobjective_prompt_filled, sub_objective = True)
+        return subobjectives.res
 
     def assign_query(self, query):
         self.query = query['transformed_query']
+        if self.use_sub_objectives_a or self.use_sub_objectives_b:
+            self.query = self.extract_subobjectives(query['transformed_query'])
         self.query_emb = self.model.encode(self.query, convert_to_tensor=True).to(self.args.device)
         self.raw_query = query['raw_query']
         self.query_type = query['query_type']
         nums = extract_numbers(query['raw_query'])
         notations = extract_notations(query['query_type'])
-        # print(nums, notations)
         
         self.start_entities = []
         for i in range(len(nums)):
             if notations[i] == 'e':
                 self.start_entities.append(nums[i])
+
+        
 
     def build_adjacency_list(self):
         """
@@ -115,9 +117,6 @@ class ExpandSubgraph:
             head, rel, tail = edges
             adj[head].append((rel, tail))
         
-        # Convert back to regular dict if needed
-        # print(list(adj.items())[0])
-        # exit()
         return adj
 
     def id2name(self, idx):
@@ -128,15 +127,8 @@ class ExpandSubgraph:
         return self._name_cache[idx]
 
     def compare_rel_query_and_return_topk(self, triplets: np.array,  fuse_func=fuse_mean, ):
-        # if type(triplets) is not list:
-        #     triplets = [triplets]
-        # if type(queries) is not list:
-        #     queries = [queries] 
-        
-        # Get unique relations and create mapping
         unique_rel_ids = np.unique(triplets[:,1])
         rels_emb = ExpandSubgraph.rel_embs[unique_rel_ids]
-        rels_emb = torch.tensor(rels_emb).to(self.args.device)
         scores = self.util.dot_score(self.query_emb, rels_emb).to('cpu')
         top_k_indices = self.return_top_k(scores, fuse_func=fuse_func)
         selected_rels = unique_rel_ids[top_k_indices]
@@ -171,22 +163,25 @@ class ExpandSubgraph:
         if query is not None:
             self.assign_query(query)
         adjacency_list = ExpandSubgraph.adj
-        start_entities = set(self.start_entities.copy())
+        start_entities = list(set(self.start_entities.copy()))
         self.reset()
         
-        for depth in range(self.depth):
+        while True or len(start_entities) > 0:
             triplets = []
             for head_id in start_entities:
                 if head_id not in adjacency_list.keys():
                     # print(f"No outgoing edges for entity {head}.")
+                    start_entities.remove(head_id)
                     continue
+                
                 edges = [(head_id, rel_id, tail_id) for rel_id, tail_id in adjacency_list[head_id]]
                 triplets.extend(edges)
-
-            triplets = [triplet for triplet in triplets if (triplet[0], triplet[1]) not in self.visited and self.id2name(triplet[2]) != "UnName_Entity"]
+            # print(triplets[0])
+            triplets = [triplet for triplet in triplets if 
+                        (triplet[0], triplet[1], triplet[2]) not in self.visited]
             #  print(len(triplets), "triplets found.")
             if triplets == []:
-                continue
+                break
             triplets = self.compare_rel_query_and_return_topk(
                 np.array(triplets), fuse_func=self.fuse_func)
             if len(triplets) == 0:
@@ -196,9 +191,9 @@ class ExpandSubgraph:
                 triplets = triplets[sampling_idx]
 
             for triplet in triplets:
-                self.visited.add((triplet[0], triplet[1]))
+                self.visited.add((triplet[0], triplet[1], triplet[2]))
 
-                self.visited.add((triplet[2], triplet[1] + -1**(triplet[1] % 2 + 2)))  # Inverse relation
+                self.visited.add((triplet[2], triplet[1] + -1**(triplet[1] % 2 + 2), triplet[0]))  # Inverse relation
             
             if type(self.subgraph_key) is type(None):
                 self.subgraph_key = triplets
@@ -207,7 +202,10 @@ class ExpandSubgraph:
                 
                 self.subgraph_key = np.concatenate([self.subgraph_key, triplets], axis=0)
 
-            start_entities = {triplet[2] for triplet in triplets}
+            start_entities = list({triplet[2] for triplet in triplets})
+            num_cands = len(np.unique(self.subgraph_key[:, [0,2]].flatten()))
+            if num_cands > self.cands_lim:
+                break
 
         # print(self.subgraph_key)
         if self.subgraph_key is None:
@@ -223,7 +221,49 @@ class ExpandSubgraph:
         node_index[topk_nodes] = torch.arange(len(topk_nodes))
 
         return topk_nodes, node_index, self.subgraph_key
+
+    def sampleSubgraphBFS(self, query=None, max_depth: int = 2):
+        adjacency_list = ExpandSubgraph.adj
+        self.reset()
+        # print("Starting BFS subgraph sampling...")
+        queue = Queue()
+        for entity in self.start_entities:
+            queue.put((entity, 0))
+        subgraph_edges = []
+
+        head = 0
+        while head < queue.qsize():
+            current_entity, depth = queue.get()
+            head += 1
+
+            if depth >= max_depth:
+                continue
+            
+            triplets = [(current_entity, rel_id, tail_id) for rel_id, tail_id in adjacency_list[current_entity]]
+            triplets = np.array([triplet for triplet in triplets if (triplet[0], triplet[1], triplet[2]) not in self.visited and self.id2name(triplet[2]) != "UnName_Entity"])
+            for triplet in triplets:
+                self.visited.add((triplet[0], triplet[1], triplet[2]))
+
+                self.visited.add((triplet[2], triplet[1] + -1**(triplet[1] % 2 + 2), triplet[0])) 
+                subgraph_edges.append(triplet)
+                queue.put((triplet[2], depth + 1))
         
+        if not subgraph_edges:
+            # If no subgraph was found, return empty structures
+            empty_nodes = np.array([], dtype=np.int64)
+            empty_index = torch.zeros(len(ExpandSubgraph.id2ent), dtype=torch.long)
+            empty_edges_arr = np.array([], dtype=np.int64).reshape(0, 3)
+            return empty_nodes, empty_index, empty_edges_arr
+
+        # Format the output to match sampleSubgraph
+        self.subgraph_key = np.array(subgraph_edges, dtype=np.int64)
+        topk_nodes = np.unique(self.subgraph_key[:, [0, 2]].flatten())
+        
+        node_index = torch.zeros(len(ExpandSubgraph.id2ent), dtype=torch.long)
+        node_index[topk_nodes] = torch.arange(len(topk_nodes))
+
+        return topk_nodes, node_index, self.subgraph_key
+
 
     def evaluate_subgraph(self, type_eval="train"):
         if not self.subgraph_key:
@@ -276,7 +316,7 @@ class ExpandSubgraph:
         for batch_idx in range(batchsize):       
             sub, topk_nodes, node_index, sampled_edges = subgraph_list[batch_idx]
             num_nodes = len(topk_nodes)
-            ent_delta = sum(ent_delta_values)
+            ent_delta = sum(ent_delta_values) # tính offset.
 
             # Adding ent_delta to make node indices unique in the batch
             sampled_edges[:,0] = node_index[sampled_edges[:,0]] + ent_delta
@@ -303,7 +343,7 @@ class ExpandSubgraph:
         return batch_idxs, abs_idxs, query_sub_idxs, edge_batch_idxs, batch_sampled_edges
     
     def updateEdges(self, new_edges):
-        self.edge_index = new_edges
+        self.edge_index = np.array(new_edges)
         ExpandSubgraph.adj = None
         if ExpandSubgraph.adj is None:
             ExpandSubgraph.adj = self.build_adjacency_list()

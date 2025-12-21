@@ -12,3 +12,4 @@ reasoning_module.py
 create_queries.py
 data/
 results/
+weights/

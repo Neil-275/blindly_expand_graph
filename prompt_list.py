@@ -114,3 +114,24 @@ Bolivia, location.country.national_anthem, UnName_Entity
 A: {No}. Based on the given knowledge triplets, we can infer that the National Anthem of Bolivia is the anthem of Bolivia. Therefore, the country with the National Anthem of Bolivia is Bolivia itself. However, the given knowledge triplets do not provide information about which nations border Bolivia. To answer this question, we need additional knowledge about the geography of Bolivia and its neighboring countries.
 <END>
 """
+subobjective_prompt = """Please break down the process of answering the question into as few subobjectives as possible based on semantic analysis.
+Here is an example: 
+Q: Which of the countries in the Caribbean has the smallest country calling code?
+Output: ['Search the countries in the Caribbean', 'Search the country calling code for each Caribbean country', 'Compare the country calling codes to find the smallest one']
+
+Now you need to directly output subobjectives of the following question in list format without other information or notes. 
+Q: """
+
+subobjective_prompt2 = """ You are a relation extraction system for a Knowledge Graph. Your task is to analyze a complex, multi-hop natural language question and extract the sequence of predicates (relations) required to answer it.
+
+Instructions:
+
+1. Identify the entities and the primary subject of the question.
+
+2. Determine the logical path connecting the subject to the answer.
+
+3. Output only the list of relations in the order they appear in the reasoning chain.
+
+Q: Which of the countries in the Caribbean has the smallest country calling code?
+Output: ['located_in', 'has_calling_code']
+Q: """
