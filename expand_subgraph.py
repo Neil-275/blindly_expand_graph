@@ -126,7 +126,8 @@ class ExpandSubgraph:
             self._name_cache[idx] = ExpandSubgraph.ent2name[ExpandSubgraph.id2ent[idx]]
         return self._name_cache[idx]
 
-    def compare_rel_query_and_return_topk(self, triplets: np.array,  fuse_func=fuse_mean, ):
+    def compare_rel_query_and_return_topk(self, triplets: list,  fuse_func=fuse_mean, ):
+        triplets = np.array(triplets)
         unique_rel_ids = np.unique(triplets[:,1])
         rels_emb = ExpandSubgraph.rel_embs[unique_rel_ids]
         scores = self.util.dot_score(self.query_emb, rels_emb).to('cpu')
@@ -166,47 +167,62 @@ class ExpandSubgraph:
         start_entities = list(set(self.start_entities.copy()))
         self.reset()
         
-        while True or len(start_entities) > 0:
+        while len(start_entities) > 0:
             triplets = []
-            for head_id in start_entities:
+            # Fix: Create a copy to avoid modifying list during iteration
+            start_entities_copy = start_entities.copy()
+            for head_id in start_entities_copy:
                 if head_id not in adjacency_list.keys():
-                    # print(f"No outgoing edges for entity {head}.")
                     start_entities.remove(head_id)
                     continue
                 
                 edges = [(head_id, rel_id, tail_id) for rel_id, tail_id in adjacency_list[head_id]]
                 triplets.extend(edges)
-            # print(triplets[0])
+
             triplets = [triplet for triplet in triplets if 
                         (triplet[0], triplet[1], triplet[2]) not in self.visited]
-            #  print(len(triplets), "triplets found.")
             if triplets == []:
                 break
-            triplets = self.compare_rel_query_and_return_topk(
-                np.array(triplets), fuse_func=self.fuse_func)
-            if len(triplets) == 0:
+            # np_triplets is an np.array
+            np_triplets = self.compare_rel_query_and_return_topk(
+                triplets, fuse_func=self.fuse_func)
+            if len(np_triplets) == 0:
                 break
-            if len(triplets) > self.k:
-                sampling_idx = np.random.choice(np.arange(len(triplets)), size=self.k, replace=False)
-                triplets = triplets[sampling_idx]
+            if len(np_triplets) > self.k:
+                sampling_idx = np.random.choice(np.arange(len(np_triplets)), size=self.k, replace=False)
+                np_triplets = np_triplets[sampling_idx]
 
-            for triplet in triplets:
+            for triplet in np_triplets:
                 self.visited.add((triplet[0], triplet[1], triplet[2]))
 
                 self.visited.add((triplet[2], triplet[1] + -1**(triplet[1] % 2 + 2), triplet[0]))  # Inverse relation
-            
-            if type(self.subgraph_key) is type(None):
-                self.subgraph_key = triplets
-                # print("Initial subgraph_key set.")
+            # print("123")
+            # Check if adding these triplets would exceed the candidate limit
+            if self.subgraph_key is not None:
+                temp_subgraph = np.concatenate([self.subgraph_key, np_triplets], axis=0)
+                temp_num_cands = len(np.unique(temp_subgraph[:, [0,2]].flatten()))
+                if temp_num_cands > self.cands_lim:
+                    # Only add triplets that don't exceed the limit
+                    for triplet in np_triplets:
+                        temp_subgraph_single = np.concatenate([self.subgraph_key, [triplet]], axis=0)
+                        temp_num_cands_single = len(np.unique(temp_subgraph_single[:, [0,2]].flatten()))
+                        if temp_num_cands_single <= self.cands_lim:
+                            self.subgraph_key = temp_subgraph_single
+                        else:
+                            break
+                    break
+                else:
+                    self.subgraph_key = temp_subgraph
             else:
-                
-                self.subgraph_key = np.concatenate([self.subgraph_key, triplets], axis=0)
-
-            start_entities = list({triplet[2] for triplet in triplets})
+                self.subgraph_key = np_triplets
+                # print("Initial subgraph_key set.")
+            
+            start_entities = list({triplet[2] for triplet in np_triplets})
+            
             num_cands = len(np.unique(self.subgraph_key[:, [0,2]].flatten()))
-            if num_cands > self.cands_lim:
+            if num_cands >= self.cands_lim:
                 break
-
+        
         # print(self.subgraph_key)
         if self.subgraph_key is None:
             # If no subgraph was found, return empty arrays/tensors
@@ -216,11 +232,14 @@ class ExpandSubgraph:
             return empty_nodes, empty_index, empty_edges
         
         topk_nodes = np.unique(self.subgraph_key[:, [0,2]].flatten())
+        topk_nodes = torch.from_numpy(topk_nodes)
         # topk_nodes = list(topk_nodes)
         node_index = torch.zeros(len(ExpandSubgraph.id2ent), dtype=torch.long)
         node_index[topk_nodes] = torch.arange(len(topk_nodes))
 
-        return topk_nodes, node_index, self.subgraph_key
+        subgraph_key = torch.tensor(self.subgraph_key, dtype=torch.long)
+
+        return topk_nodes, node_index, subgraph_key
 
     def sampleSubgraphBFS(self, query=None, max_depth: int = 2):
         adjacency_list = ExpandSubgraph.adj
@@ -321,7 +340,7 @@ class ExpandSubgraph:
             # Adding ent_delta to make node indices unique in the batch
             sampled_edges[:,0] = node_index[sampled_edges[:,0]] + ent_delta
             sampled_edges[:,2] = node_index[sampled_edges[:,2]] + ent_delta
-            batch_sampled_edges.append(torch.from_numpy(sampled_edges))
+            batch_sampled_edges.append(sampled_edges)
             edge_batch_idxs += [batch_idx] * int(sampled_edges.shape[0])
 
             ent_delta_values.append(num_nodes)

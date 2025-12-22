@@ -1,0 +1,49 @@
+================================================================================
+🔍 COMPREHENSIVE SUBGRAPH RETRIEVAL ANALYSIS REPORT
+================================================================================
+
+📊 DATASET SUMMARY:
+   • Total experiments: 45
+   • Fact ratio range: 0.4 - 0.8
+   • Candidates limit range: 64 - 1024
+   • Query types: 1_hop, 2_hop, 3_hop
+
+🎯 PERFORMANCE ANALYSIS:
+   • Best Coverage: 0.973
+     └─ Configuration: fact_ratio=0.8, cands_lim=128, query_type=1_hop
+   • Best Hit Rate: 1.000
+     └─ Configuration: fact_ratio=0.8, cands_lim=64, query_type=1_hop
+
+📈 TREND ANALYSIS:
+   • Candidates Limit Effect:
+     └─ 64: Coverage=0.703, Hit Rate=0.837
+     └─ 128: Coverage=0.734, Hit Rate=0.835
+     └─ 256: Coverage=0.691, Hit Rate=0.801
+     └─ 512: Coverage=0.674, Hit Rate=0.809
+     └─ 1024: Coverage=0.672, Hit Rate=0.813
+   • Fact Ratio Effect:
+     └─ 0.4: Coverage=0.631, Hit Rate=0.777
+     └─ 0.6: Coverage=0.682, Hit Rate=0.807
+     └─ 0.8: Coverage=0.772, Hit Rate=0.872
+
+🔗 QUERY COMPLEXITY ANALYSIS:
+   • 1_hop:
+     └─ Coverage: 0.843 ± 0.077
+     └─ Hit Rate: 0.892 ± 0.072
+     └─ Avg Subgraph Size: 1002.6
+   • 2_hop:
+     └─ Coverage: 0.658 ± 0.078
+     └─ Hit Rate: 0.813 ± 0.068
+     └─ Avg Subgraph Size: 967.4
+   • 3_hop:
+     └─ Coverage: 0.584 ± 0.083
+     └─ Hit Rate: 0.752 ± 0.065
+     └─ Avg Subgraph Size: 979.7
+
+💡 RECOMMENDATIONS:
+   • Optimal Configuration (balanced): fact_ratio=0.8, cands_lim=128
+   • For maximum coverage: fact_ratio=0.8, cands_lim=128
+   • For maximum hit rate: fact_ratio=0.8, cands_lim=64
+   • Most efficient (coverage/size): fact_ratio=0.8, cands_lim=128
+
+================================================================================

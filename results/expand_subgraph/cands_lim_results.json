@@ -1,0 +1,418 @@
+{
+    "experiment_type": "cands_lim_analysis",
+    "cands_lim_values": [
+        64,
+        128,
+        256,
+        512,
+        1024
+    ],
+    "num_queries_per_test": 47,
+    "results": [
+        {
+            "fact_ratio": 0.4,
+            "cands_lim": 64,
+            "query_type": "1_hop",
+            "mean_coverage": 0.7360688956433635,
+            "hit_rate": 0.7872340425531915,
+            "avg_subgraph_size": 988.3404255319149,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.4,
+            "cands_lim": 64,
+            "query_type": "2_hop",
+            "mean_coverage": 0.6726426636109407,
+            "hit_rate": 0.8085106382978723,
+            "avg_subgraph_size": 947.8085106382979,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.4,
+            "cands_lim": 64,
+            "query_type": "3_hop",
+            "mean_coverage": 0.5740433943880263,
+            "hit_rate": 0.7872340425531915,
+            "avg_subgraph_size": 928.2978723404256,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.4,
+            "cands_lim": 128,
+            "query_type": "1_hop",
+            "mean_coverage": 0.7755825734549138,
+            "hit_rate": 0.8085106382978723,
+            "avg_subgraph_size": 960.5106382978723,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.4,
+            "cands_lim": 128,
+            "query_type": "2_hop",
+            "mean_coverage": 0.5829502078698932,
+            "hit_rate": 0.8085106382978723,
+            "avg_subgraph_size": 936.8723404255319,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.4,
+            "cands_lim": 128,
+            "query_type": "3_hop",
+            "mean_coverage": 0.6452649243053153,
+            "hit_rate": 0.851063829787234,
+            "avg_subgraph_size": 959.8085106382979,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.4,
+            "cands_lim": 256,
+            "query_type": "1_hop",
+            "mean_coverage": 0.7666666666666666,
+            "hit_rate": 0.8085106382978723,
+            "avg_subgraph_size": 999.6170212765958,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.4,
+            "cands_lim": 256,
+            "query_type": "2_hop",
+            "mean_coverage": 0.5456701593460188,
+            "hit_rate": 0.6808510638297872,
+            "avg_subgraph_size": 883.3617021276596,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.4,
+            "cands_lim": 256,
+            "query_type": "3_hop",
+            "mean_coverage": 0.5030711090934947,
+            "hit_rate": 0.6808510638297872,
+            "avg_subgraph_size": 927.7446808510638,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.4,
+            "cands_lim": 512,
+            "query_type": "1_hop",
+            "mean_coverage": 0.8257767646065518,
+            "hit_rate": 0.8936170212765957,
+            "avg_subgraph_size": 986.936170212766,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.4,
+            "cands_lim": 512,
+            "query_type": "2_hop",
+            "mean_coverage": 0.5500164483745857,
+            "hit_rate": 0.723404255319149,
+            "avg_subgraph_size": 973.7872340425532,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.4,
+            "cands_lim": 512,
+            "query_type": "3_hop",
+            "mean_coverage": 0.48527047601676937,
+            "hit_rate": 0.7021276595744681,
+            "avg_subgraph_size": 941.9574468085107,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.4,
+            "cands_lim": 1024,
+            "query_type": "1_hop",
+            "mean_coverage": 0.7595099935525467,
+            "hit_rate": 0.8085106382978723,
+            "avg_subgraph_size": 977.9148936170212,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.4,
+            "cands_lim": 1024,
+            "query_type": "2_hop",
+            "mean_coverage": 0.5719755495152726,
+            "hit_rate": 0.7872340425531915,
+            "avg_subgraph_size": 958.5744680851063,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.4,
+            "cands_lim": 1024,
+            "query_type": "3_hop",
+            "mean_coverage": 0.4658323234613326,
+            "hit_rate": 0.723404255319149,
+            "avg_subgraph_size": 936.2340425531914,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.6,
+            "cands_lim": 64,
+            "query_type": "1_hop",
+            "mean_coverage": 0.8220832949556354,
+            "hit_rate": 0.9148936170212766,
+            "avg_subgraph_size": 1021.9574468085107,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.6,
+            "cands_lim": 64,
+            "query_type": "2_hop",
+            "mean_coverage": 0.711135064923628,
+            "hit_rate": 0.8723404255319149,
+            "avg_subgraph_size": 958.8085106382979,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.6,
+            "cands_lim": 64,
+            "query_type": "3_hop",
+            "mean_coverage": 0.4536401225171245,
+            "hit_rate": 0.6595744680851063,
+            "avg_subgraph_size": 984.1276595744681,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.6,
+            "cands_lim": 128,
+            "query_type": "1_hop",
+            "mean_coverage": 0.8708628841607565,
+            "hit_rate": 0.8936170212765957,
+            "avg_subgraph_size": 1024.0,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.6,
+            "cands_lim": 128,
+            "query_type": "2_hop",
+            "mean_coverage": 0.6748667448784844,
+            "hit_rate": 0.7872340425531915,
+            "avg_subgraph_size": 945.4893617021277,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.6,
+            "cands_lim": 128,
+            "query_type": "3_hop",
+            "mean_coverage": 0.5592974809196173,
+            "hit_rate": 0.6382978723404256,
+            "avg_subgraph_size": 983.063829787234,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.6,
+            "cands_lim": 256,
+            "query_type": "1_hop",
+            "mean_coverage": 0.7905911464422103,
+            "hit_rate": 0.8723404255319149,
+            "avg_subgraph_size": 1023.5106382978723,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.6,
+            "cands_lim": 256,
+            "query_type": "2_hop",
+            "mean_coverage": 0.689005514764592,
+            "hit_rate": 0.8297872340425532,
+            "avg_subgraph_size": 898.7659574468086,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.6,
+            "cands_lim": 256,
+            "query_type": "3_hop",
+            "mean_coverage": 0.5931807885381851,
+            "hit_rate": 0.723404255319149,
+            "avg_subgraph_size": 1014.8936170212766,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.6,
+            "cands_lim": 512,
+            "query_type": "1_hop",
+            "mean_coverage": 0.7863267937736024,
+            "hit_rate": 0.851063829787234,
+            "avg_subgraph_size": 997.7234042553191,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.6,
+            "cands_lim": 512,
+            "query_type": "2_hop",
+            "mean_coverage": 0.6266278075749524,
+            "hit_rate": 0.8085106382978723,
+            "avg_subgraph_size": 955.1489361702128,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.6,
+            "cands_lim": 512,
+            "query_type": "3_hop",
+            "mean_coverage": 0.5647003462391883,
+            "hit_rate": 0.723404255319149,
+            "avg_subgraph_size": 1027.212765957447,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.6,
+            "cands_lim": 1024,
+            "query_type": "1_hop",
+            "mean_coverage": 0.8244680851063828,
+            "hit_rate": 0.8723404255319149,
+            "avg_subgraph_size": 976.063829787234,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.6,
+            "cands_lim": 1024,
+            "query_type": "2_hop",
+            "mean_coverage": 0.7037213998354316,
+            "hit_rate": 0.8936170212765957,
+            "avg_subgraph_size": 973.6382978723404,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.6,
+            "cands_lim": 1024,
+            "query_type": "3_hop",
+            "mean_coverage": 0.5569208160302765,
+            "hit_rate": 0.7659574468085106,
+            "avg_subgraph_size": 998.7021276595744,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.8,
+            "cands_lim": 64,
+            "query_type": "1_hop",
+            "mean_coverage": 0.946126568466994,
+            "hit_rate": 1.0,
+            "avg_subgraph_size": 1014.3829787234042,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.8,
+            "cands_lim": 64,
+            "query_type": "2_hop",
+            "mean_coverage": 0.7538936383434565,
+            "hit_rate": 0.9148936170212766,
+            "avg_subgraph_size": 994.2765957446809,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.8,
+            "cands_lim": 64,
+            "query_type": "3_hop",
+            "mean_coverage": 0.6599839970852798,
+            "hit_rate": 0.7872340425531915,
+            "avg_subgraph_size": 969.3404255319149,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.8,
+            "cands_lim": 128,
+            "query_type": "1_hop",
+            "mean_coverage": 0.972722313147845,
+            "hit_rate": 1.0,
+            "avg_subgraph_size": 1018.7659574468086,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.8,
+            "cands_lim": 128,
+            "query_type": "2_hop",
+            "mean_coverage": 0.8019508504592507,
+            "hit_rate": 0.8936170212765957,
+            "avg_subgraph_size": 1024.6170212765958,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.8,
+            "cands_lim": 128,
+            "query_type": "3_hop",
+            "mean_coverage": 0.7213686957036157,
+            "hit_rate": 0.8297872340425532,
+            "avg_subgraph_size": 1002.5531914893617,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.8,
+            "cands_lim": 256,
+            "query_type": "1_hop",
+            "mean_coverage": 0.9219858156028369,
+            "hit_rate": 0.9361702127659575,
+            "avg_subgraph_size": 1018.7446808510638,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.8,
+            "cands_lim": 256,
+            "query_type": "2_hop",
+            "mean_coverage": 0.7321060765472454,
+            "hit_rate": 0.8723404255319149,
+            "avg_subgraph_size": 1021.2765957446809,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.8,
+            "cands_lim": 256,
+            "query_type": "3_hop",
+            "mean_coverage": 0.6736862529394951,
+            "hit_rate": 0.8085106382978723,
+            "avg_subgraph_size": 995.8510638297872,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.8,
+            "cands_lim": 512,
+            "query_type": "1_hop",
+            "mean_coverage": 0.9343971631205673,
+            "hit_rate": 0.9787234042553191,
+            "avg_subgraph_size": 1027.4893617021276,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.8,
+            "cands_lim": 512,
+            "query_type": "2_hop",
+            "mean_coverage": 0.6595135676293938,
+            "hit_rate": 0.7659574468085106,
+            "avg_subgraph_size": 1016.531914893617,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.8,
+            "cands_lim": 512,
+            "query_type": "3_hop",
+            "mean_coverage": 0.6347717042214361,
+            "hit_rate": 0.8297872340425532,
+            "avg_subgraph_size": 1014.4255319148937,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.8,
+            "cands_lim": 1024,
+            "query_type": "1_hop",
+            "mean_coverage": 0.9046099290780143,
+            "hit_rate": 0.9574468085106383,
+            "avg_subgraph_size": 1002.8936170212766,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.8,
+            "cands_lim": 1024,
+            "query_type": "2_hop",
+            "mean_coverage": 0.5876548899164608,
+            "hit_rate": 0.7446808510638298,
+            "avg_subgraph_size": 1022.1914893617021,
+            "num_queries": 47
+        },
+        {
+            "fact_ratio": 0.8,
+            "cands_lim": 1024,
+            "query_type": "3_hop",
+            "mean_coverage": 0.6737938548654343,
+            "hit_rate": 0.7659574468085106,
+            "avg_subgraph_size": 1011.5531914893617,
+            "num_queries": 47
+        }
+    ]
+}
