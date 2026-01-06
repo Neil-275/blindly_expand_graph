@@ -48,18 +48,25 @@ class ExpandSubgraph:
 
     adj = None
     rel_embs = None
-    def __init__(self, n_ent: int, n_rel: int, homoEdges: list, edge_index: np.array, args=None,
+    def __init__(self, n_ent: int, n_rel: int, homoEdges: list, edge_index: list[list], args=None,
                   fuse_func=fuse_mean,
                   use_sub_objectives_a=False,
-                  use_sub_objectives_b=False):
+                  use_sub_objectives_b=False,
+                  GoG_simulation=False,
+                  GoG_args = None
+                  ):
         # not using homoEdges currently
         self.args = args
         self.model = ExpandSubgraph.model.to(args.device)
         self.util = util
         self.k = args.k
         self.cands_lim = args.cands_lim
-        # print("type(edge_index):", type(edge_index))
-        self.edge_index = np.array(edge_index)
+        self.GoG_simulation = GoG_simulation
+        self.GoG_args = GoG_args
+        if GoG_simulation:
+            assert(GoG_args is not None), "Please provide GoG_args when GoG_simulation is True"
+        self.orignal_edge_index = np.array(edge_index)
+        self.edge_index = self.orignal_edge_index.copy()
         if ExpandSubgraph.adj is None:
             ExpandSubgraph.adj = self.build_adjacency_list()
         if ExpandSubgraph.rel_embs is None:
@@ -88,12 +95,8 @@ class ExpandSubgraph:
         return subobjectives.res
 
     def assign_query(self, query):
-        self.query = query['transformed_query']
-        if self.use_sub_objectives_a or self.use_sub_objectives_b:
-            self.query = self.extract_subobjectives(query['transformed_query'])
-        self.query_emb = self.model.encode(self.query, convert_to_tensor=True).to(self.args.device)
-        self.raw_query = query['raw_query']
-        self.query_type = query['query_type']
+        self.query = query
+        self.query_emb = self.model.encode(self.query['natural_query'], convert_to_tensor=True).to(self.args.device)
         nums = extract_numbers(query['raw_query'])
         notations = extract_notations(query['query_type'])
         
@@ -101,7 +104,12 @@ class ExpandSubgraph:
         for i in range(len(nums)):
             if notations[i] == 'e':
                 self.start_entities.append(nums[i])
-
+        self.edge_index = self.orignal_edge_index.copy()
+        if self.GoG_simulation:
+            print("Simulating GoG by removing edges...")
+            self.remove1hopEdges()
+            self.removeGoldRelationPath()
+            self.updateEdges(self.edge_index)
         
 
     def build_adjacency_list(self):
@@ -238,10 +246,15 @@ class ExpandSubgraph:
         node_index[topk_nodes] = torch.arange(len(topk_nodes))
 
         subgraph_key = torch.tensor(self.subgraph_key, dtype=torch.long)
-
+        ## Return 3 tensors
         return topk_nodes, node_index, subgraph_key
 
-    def sampleSubgraphBFS(self, query=None, max_depth: int = 2):
+    def sampleSubgraphBFS(self, query=None, max_depth: int = None):
+        if query is not None:
+            self.assign_query(query)
+        if not max_depth:
+            max_depth = self.args.depth
+        # print(max_depth)
         adjacency_list = ExpandSubgraph.adj
         self.reset()
         # print("Starting BFS subgraph sampling...")
@@ -276,12 +289,13 @@ class ExpandSubgraph:
 
         # Format the output to match sampleSubgraph
         self.subgraph_key = np.array(subgraph_edges, dtype=np.int64)
-        topk_nodes = np.unique(self.subgraph_key[:, [0, 2]].flatten())
+        topk_nodes = torch.from_numpy(self.subgraph_key[:, [0, 2]].flatten())
         
         node_index = torch.zeros(len(ExpandSubgraph.id2ent), dtype=torch.long)
         node_index[topk_nodes] = torch.arange(len(topk_nodes))
+        subgraph_key = torch.tensor(self.subgraph_key, dtype=torch.long)
 
-        return topk_nodes, node_index, self.subgraph_key
+        return topk_nodes, node_index, subgraph_key
 
 
     def evaluate_subgraph(self, type_eval="train"):
@@ -310,7 +324,7 @@ class ExpandSubgraph:
 
     def evaluate_rel_coverage(self, rels, type_eval="train"):
         # print(self.raw_query)
-        notations = extract_notations(self.query_type)
+        notations = extract_notations(self.query['query_type'])
         rels_ans = extract_numbers(self.raw_query)
         rels_ans = set([rel for i, rel in enumerate(rels_ans) if notations[i] == 'r'])
 
@@ -366,3 +380,112 @@ class ExpandSubgraph:
         ExpandSubgraph.adj = None
         if ExpandSubgraph.adj is None:
             ExpandSubgraph.adj = self.build_adjacency_list()
+
+    def removeGoldRelationPath(self):
+        # print("Removing gold relation path edges...")
+        gd_relations = []
+        for idx, num in zip(extract_notations(self.query['query_type']), extract_numbers(self.query['raw_query'])):
+            if idx == 'r':
+                gd_relations.append(num)
+        answer_set = self.query['answers_id']
+        # print(len(gd_relations))
+        paths = []
+        for entity in self.start_entities:
+            paths.append([entity])
+        gold_relation_paths = []
+        while True:
+            # print(123)
+            new_paths = []
+            for path in paths:
+                current_entity = path[-1]
+                cur_ent_idx = len(path) - 1
+                cur_rel_idx = cur_ent_idx 
+                
+                if current_entity in answer_set and len(path) == len(gd_relations) + 1:
+                    # print("path:", path)
+                    gold_relation_paths.append(path)
+                    continue
+                
+                # Check if we've used all relations in the path
+                if cur_rel_idx >= len(gd_relations):
+                    continue
+                    
+                dir_rel = gd_relations[cur_rel_idx]
+                # Only follow directed edges: current_entity must be the head (column 0)
+                match = (self.edge_index[:,1] == dir_rel) & (self.edge_index[:,0] == current_entity)
+                tails = np.unique(self.edge_index[match, 2]).tolist()
+
+                # print(tails)
+                # print("**************\n")
+                for tail in tails:
+                    if tail in path:
+                        continue
+                    # print(tail, path, tail in path)
+                    p = path.copy()
+                    p.append(tail)
+                    new_paths.append(p)
+            if len(new_paths) == 0:
+                break
+            paths = new_paths
+            
+            # break
+        
+        gold_triplets = []
+        for path in gold_relation_paths:
+            # if (len(path) > len(gd_relations) + 1): continue
+            tmp = []
+            for i in range(len(gd_relations)):
+                # print(i)
+                triplets = np.array([path[i], gd_relations[i], path[i+1]])
+                gold_triplets.append(triplets)
+                tmp.append(triplets)
+            
+        gold_triplets = np.unique(np.array(gold_triplets), axis=0).tolist()
+
+        random.shuffle(gold_triplets)
+        num_to_remove = int((self.GoG_args['drop_ratio']) * len(gold_triplets))
+        triplets_to_remove = gold_triplets[:num_to_remove]
+        
+        # Use mask-based removal to avoid index shifting issues
+        mask = np.ones(len(self.edge_index), dtype=bool)
+        
+        for triplet in triplets_to_remove:
+            # Find and mark forward edge for removal
+            
+            matches = np.where((self.edge_index == triplet).all(axis=1))[0]
+            # print(triplet, matches)
+            if len(matches) > 0:
+                mask[matches[0]] = False
+            
+            # Find and mark inverse edge for removal
+            rel_idx = triplet[1] + (-1)**(triplet[1] % 2 + 2)
+            inv_triplet = np.array([triplet[2], rel_idx, triplet[0]])
+            inv_matches = np.where((self.edge_index == inv_triplet).all(axis=1))[0]
+            if len(inv_matches) > 0:
+                mask[inv_matches[0]] = False
+        
+        # Apply mask once to remove all edges
+        self.edge_index = self.edge_index[mask]
+
+    def remove1hopEdges(self):
+        # print("Removing 1-hop edges between start entities and answers...")
+        # print(type(self.edge_index))
+        ents = np.array([[a[0], a[2]] for a in self.edge_index])
+        start_entities = self.start_entities
+        # Use correct key: try 'answers_id' first, fallback to 'answers'
+        answer_ids = self.query.get('answers_id', self.query.get('answers', []))
+        
+        # Build list of 1-hop connections to remove
+        gd_doublets = []
+        for start_entity in start_entities:
+            for answer_id in answer_ids:
+                gd_doublets.append(np.array([start_entity, answer_id]))
+        
+        # Use mask-based removal to avoid index shifting
+        mask = np.ones(len(self.edge_index), dtype=bool)
+        for doublet in gd_doublets:
+            matches = np.where((ents == doublet).all(axis=1))[0]
+            mask[matches] = False
+        
+        self.edge_index = self.edge_index[mask]
+            
