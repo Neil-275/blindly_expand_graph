@@ -20,7 +20,12 @@ from sentence_transformers import SentenceTransformer, util
 
 
 
-
+def convert_relation(rel: str):
+    tmp = rel.split("/")
+    if tmp[0] == "+":
+        return "/".join(tmp[1:])
+    elif tmp[0] == "-":
+        return "/".join(tmp[1:][::-1]) 
 
 
 
@@ -44,6 +49,7 @@ class ExpandSubgraph:
 
 
     name2ent = {v:k for k,v in ent2name.items()}  
+    id2rel = {k:convert_relation(v) for k,v in id2rel.items()}
     rel2id = {v:k for k,v in id2rel.items()}  
 
     adj = None
@@ -59,7 +65,11 @@ class ExpandSubgraph:
         self.args = args
         self.model = ExpandSubgraph.model.to(args.device)
         self.util = util
-        self.k = args.k
+        self.k_rel_org = args.k_rel
+        self.k_cands_org = args.k_cands
+        self.k_rel = args.k_rel
+        self.k_cands = args.k_cands
+        self.k_decay = 0.9
         self.cands_lim = args.cands_lim
         self.GoG_simulation = GoG_simulation
         self.GoG_args = GoG_args
@@ -106,7 +116,7 @@ class ExpandSubgraph:
                 self.start_entities.append(nums[i])
         self.edge_index = self.orignal_edge_index.copy()
         if self.GoG_simulation:
-            print("Simulating GoG by removing edges...")
+            # print("Simulating GoG by removing edges...")
             self.remove1hopEdges()
             self.removeGoldRelationPath()
             self.updateEdges(self.edge_index)
@@ -143,20 +153,20 @@ class ExpandSubgraph:
         selected_rels = unique_rel_ids[top_k_indices]
 
         rel_order = {unique_rel_ids[idx]: rank for rank, idx in enumerate(top_k_indices)}
-        filter_idx = (triplets[:, 1] == selected_rels[:, None]).any(axis=0)
-        filtered_triplets = triplets[filter_idx]
+        filter_mask = (triplets[:, 1] == selected_rels[:, None]).any(axis=0)
+        filtered_triplets = triplets[filter_mask]
         
         # Sort by the ranking from top-k
         sorted_keys = np.array([rel_order.get(item[1], float('inf')) for item in filtered_triplets])
 
         sorted_triplets = filtered_triplets[np.argsort(sorted_keys)]
         # print("sorted_triplets:", sorted_triplets)
-        return sorted_triplets[:self.k]
+        return filtered_triplets
 
 
     def return_top_k(self, scores, fuse_func=fuse_mean):
         scores = fuse_func(scores)
-        k = min(self.k, scores.shape[1])
+        k = min(self.k_rel, scores.shape[1])
         scores, sorted_indices = torch.topk(scores, k, largest=True, dim=-1)
         # print("scores:", scores, "sorted_indices:", sorted_indices)
         return sorted_indices[0].tolist()
@@ -164,6 +174,8 @@ class ExpandSubgraph:
     def reset(self):
         self.subgraph_key = None
         self.visited = set()
+        self.k_rels = self.k_rel_org
+        self.k_cands = self.k_cands_org
         self._name_cache = {}
 
     def sampleSubgraph(self, query=None):
@@ -176,6 +188,8 @@ class ExpandSubgraph:
         self.reset()
         
         while len(start_entities) > 0:
+            # print("hahaha")
+            
             triplets = []
             # Fix: Create a copy to avoid modifying list during iteration
             start_entities_copy = start_entities.copy()
@@ -196,8 +210,10 @@ class ExpandSubgraph:
                 triplets, fuse_func=self.fuse_func)
             if len(np_triplets) == 0:
                 break
-            if len(np_triplets) > self.k:
-                sampling_idx = np.random.choice(np.arange(len(np_triplets)), size=self.k, replace=False)
+
+            # randomly prune cands
+            if len(np_triplets) > self.k_cands:
+                sampling_idx = np.random.choice(np.arange(len(np_triplets)), size=self.k_cands, replace=False)
                 np_triplets = np_triplets[sampling_idx]
 
             for triplet in np_triplets:
@@ -230,13 +246,16 @@ class ExpandSubgraph:
             num_cands = len(np.unique(self.subgraph_key[:, [0,2]].flatten()))
             if num_cands >= self.cands_lim:
                 break
+            
+            # self.k_rel = max(1, int(self.k_rel * self.k_decay))
+            # self.k_cands = max(1, int(self.k_cands * self.k_decay))
         
         # print(self.subgraph_key)
         if self.subgraph_key is None:
             # If no subgraph was found, return empty arrays/tensors
-            empty_nodes = np.array([], dtype=np.int64)
+            empty_nodes = torch.tensor([], dtype=torch.long)
             empty_index = torch.zeros(len(ExpandSubgraph.id2ent), dtype=torch.long)
-            empty_edges = np.array([], dtype=np.int64).reshape(0, 3)
+            empty_edges = torch.tensor([], dtype=torch.long).reshape(0, 3)
             return empty_nodes, empty_index, empty_edges
         
         topk_nodes = np.unique(self.subgraph_key[:, [0,2]].flatten())
@@ -244,7 +263,7 @@ class ExpandSubgraph:
         # topk_nodes = list(topk_nodes)
         node_index = torch.zeros(len(ExpandSubgraph.id2ent), dtype=torch.long)
         node_index[topk_nodes] = torch.arange(len(topk_nodes))
-
+        
         subgraph_key = torch.tensor(self.subgraph_key, dtype=torch.long)
         ## Return 3 tensors
         return topk_nodes, node_index, subgraph_key
