@@ -12,7 +12,7 @@ from model_2 import Projector
 # 2. Dataset for Alignment
 # ---------------------------------------------------------
 class RelationAlignmentDataset(Dataset):
-    def __init__(self, llm_embs, rel_labels, gnn_vec, num_negatives=7):
+    def __init__(self, llm_embs, rel_labels, gnn_vec, num_negatives=5):
         """
         Args:
             llm_embs: Tensor of shape (total_variations, llm_dim)
@@ -77,8 +77,8 @@ def run_alignment_training(llm_data, rel_labels, gnn_data, epochs=200, batch_siz
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
     
-    criterion = nn.TripletMarginLoss(margin=1.0, p=2)
-    optimizer = optim.AdamW(projector.parameters(), lr=lr, weight_decay=1e-3)
+    criterion = nn.TripletMarginLoss(margin=1.2, p=2)
+    optimizer = optim.AdamW(projector.parameters(), lr=lr, weight_decay=5e-3)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
     
     best_val_loss = float('inf')
@@ -96,13 +96,18 @@ def run_alignment_training(llm_data, rel_labels, gnn_data, epochs=200, batch_siz
                 proj_a = projector(l, anchors) # [B, GNN_Dim]
                 pos = pos_stack[:, l, :]       # [B, GNN_Dim]
                 
-                # Compute loss against each negative in the bank
-                layer_neg_loss = 0
+                # Implementation of Hard Negative Mining: 
+                # Instead of averaging all negatives, we focus on the ones closest to the anchor
+                layer_neg_losses = []
                 for k in range(num_negatives):
                     neg = neg_stacks[:, k, l, :] # [B, GNN_Dim]
-                    layer_neg_loss += criterion(proj_a, pos, neg)
+                    layer_neg_losses.append(criterion(proj_a, pos, neg))
                 
-                total_batch_loss += (layer_neg_loss / num_negatives)
+                # Take the top 50% hardest negatives in the batch for this relation
+                sorted_losses, _ = torch.sort(torch.stack(layer_neg_losses), descending=True)
+                hard_loss = sorted_losses[:max(1, num_negatives // 2)].mean()
+                
+                total_batch_loss += hard_loss
             
             loss = total_batch_loss / num_layers
             loss.backward()
