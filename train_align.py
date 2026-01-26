@@ -3,17 +3,38 @@ import torch
 import pickle as pkl
 import wandb
 import random
+import numpy as np
 from loader2 import DataLoader2
 import os
 from torch.optim import Adam
-from torch.optim.lr_scheduler import OneCycleLR
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 import time
 import copy
 from tqdm import tqdm
 from utils import cal_performance
+from torch_scatter import scatter_max, scatter_add
 
 
+def get_latest_checkpoint():
+    """Find and return the path to the latest checkpoint.
+    
+    Returns:
+        Path to the latest checkpoint or None if no checkpoint exists
+    """
+    if not os.path.exists('saveModels'):
+        return None
+    
+    checkpoint_files = [f for f in os.listdir('saveModels') if f.startswith('topk_') and f.endswith('.pt')]
+    if not checkpoint_files:
+        return None
+    
+    # Get the most recently modified checkpoint
+    latest_checkpoint = max(
+        checkpoint_files,
+        key=lambda f: os.path.getmtime(os.path.join('saveModels', f))
+    )
+    return os.path.join('saveModels', latest_checkpoint)
 
 
 def loadModel(filePath, model):
@@ -29,14 +50,16 @@ def loadModel(filePath, model):
         # self.optimizer = Adam(self.model.parameters(), lr=self.args.lr, weight_decay=self.args.lamb)
 
 class Trainer:
-    def __init__(self, gnn_model, projector, train_loader, val_loader, args):
-        self.gnn_model = gnn_model
-        self.projector = projector
-        
+    def __init__(self, gnn_model, projector, train_loader, val_loader, val_train_loader, args):
+        self.gnn_model = gnn_model.to(args.device)
+        self.projector = projector.to(args.device)
+        gnn_model._setup_readout() 
         self.args = args
         self.t_time = 0
         self.train_loader = train_loader
         self.val_loader = val_loader
+        self.val_train_loader = val_train_loader
+        # print(len(val_loader))
         self.optimizer, self.scheduler = self.setup_training(train_loader)
 
     def setup_training(self, train_loader):
@@ -55,14 +78,13 @@ class Trainer:
         # Create optimizer with different learning rates
         optimizer = Adam(param_groups, weight_decay=1e-2)
         
-        # OneCycleLR is great for ranking tasks as it helps escape local minima
-        total_steps = len(train_loader) * self.args.epochs
-        scheduler = OneCycleLR(
+        # ReduceLROnPlateau reduces LR when validation metric plateaus
+        scheduler = ReduceLROnPlateau(
             optimizer, 
-            max_lr=self.args.gnn_lr * 10, 
-            total_steps=total_steps,
-            pct_start=0.1, 
-            anneal_strategy='cos'
+            mode='max', 
+            factor=0.5, 
+            patience=2, 
+            min_lr=self.args.gnn_lr / 20
         )
     
         return optimizer, scheduler
@@ -75,7 +97,83 @@ class Trainer:
         objs = objs.cuda()
         return subs, rels, objs, subgraph_data
 
-    def train_batch(self):        
+
+    def compute_local_loss(self, scores, batch_idxs, query_tail_idxs, query_head_idxs):
+        # 1. Mask the Head: We set the head score to a very large negative value.
+        # This ensures the head is never the 'max_n' and contributes 0 to the LogSumExp.
+        masked_scores = scores.clone()
+        # print("Before masking, head scores:", scores[query_head_idxs])
+        # masked_scores[query_head_idxs] = -1e10 
+
+        # 2. Positive scores (the actual tails we want to find)
+        pos_scores = scores[query_tail_idxs]
+        
+        # 3. Denominator (LogSumExp) calculation over the rest of the nodes
+        max_n, _ = scatter_max(masked_scores, batch_idxs, dim=0)
+        max_n_broadcasted = max_n[batch_idxs]
+        exp_shifted = torch.exp(masked_scores - max_n_broadcasted)
+        sum_exp = scatter_add(exp_shifted, batch_idxs, dim=0)
+        log_sum_exp = torch.log(sum_exp + 1e-10)
+        
+        # Formula: -Score(pos) + LogSumExp(all_nodes_except_head)
+        per_query_loss = -pos_scores + max_n + log_sum_exp
+        
+        return torch.sum(per_query_loss)
+
+    def saveModelToFiles(self, args, best_metric, epoch, best_mrr, deleteLastFiles=True):
+        # if args.val_num == -1:
+        #     savePath = f'/saveModel/topk_{best_metric}.pt'
+        # else:
+        if deleteLastFiles:
+            previous_files = [f for f in os.listdir('saveModels') if f.startswith('topk_')]
+            for pf in previous_files:
+                os.remove(os.path.join('saveModels', pf))
+        savePath = f'saveModels/topk_{best_metric}.pt'
+            
+        print(f'Save checkpoint to : {savePath}')
+        torch.save({
+                'gnn_model': self.gnn_model.state_dict(),
+                'projector': self.projector.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'scheduler_state_dict': self.scheduler.state_dict(),
+                'best_mrr': best_mrr,
+                'epoch': epoch,
+                }, savePath)
+    
+    def load_checkpoint(self, checkpoint_path):
+        """Load a checkpoint to resume training.
+        
+        Args:
+            checkpoint_path: Path to the checkpoint file
+            
+        Returns:
+            Dictionary with 'epoch', 'best_mrr', and other training state
+        """
+        print(f'Loading checkpoint from {checkpoint_path}')
+        assert os.path.exists(checkpoint_path), f"Checkpoint not found at {checkpoint_path}"
+        checkpoint = torch.load(checkpoint_path, map_location=torch.device('cuda:0'))
+        
+        # Load model states
+        if checkpoint.get('gnn_model') is not None:
+            self.gnn_model.load_state_dict(checkpoint['gnn_model'])
+
+        if checkpoint.get('projector') is not None:
+            self.projector.load_state_dict(checkpoint['projector'])
+        if checkpoint.get('optimizer_state_dict') is not None:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
+        # Load scheduler state if available
+        if checkpoint.get('scheduler_state_dict') is not None:
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        epoch = checkpoint.get('epoch', 0)
+        best_mrr = checkpoint.get('best_mrr', 0)
+        
+        print(f'Checkpoint loaded: epoch={epoch}, best_mrr={best_mrr}')
+        return {'epoch': epoch, 'best_mrr': best_mrr}
+        
+
+    def train_batch(self, epoch_idx):        
         # ov_str = ""
         epoch_loss = 0
         reach_tails_list = []
@@ -83,100 +181,134 @@ class Trainer:
         self.gnn_model.train()
         k = 0
         
-        for batch_data in tqdm(self.train_loader, ncols=50, leave=False):                      
-            # prepare data    
+        # torch.cuda.memory._record_memory_history(max_entries=100000)
+        start_time = time.time()
+        pbar = tqdm(self.train_loader, ncols=50, desc=f"Epoch {epoch_idx}")
+        stop = 2
+        for i, batch_data in enumerate(pbar):                      
+        # prepare data    
             subs, rels, objs, subgraph_data = self.prepareData(batch_data)
-            # print(subs.max())
+            batch_idxs, _, query_sub_idxs, query_tail_idxs, _, _ = subgraph_data
+            batch_idxs = batch_idxs.cuda()
+            query_tail_idxs = query_tail_idxs.cuda()
+            query_sub_idxs = query_sub_idxs.cuda()
             # forward
+            # print("shape check:", subs.shape, rels.shape, objs.shape)
             self.gnn_model.zero_grad()
+            
             scores = self.gnn_model(subs, rels, subgraph_data, self.projector)
-            print(scores.shape)
-            k += 1
-            if k == 2:
-                break
-        #     # loss calculation
-        #     pos_scores = scores[[torch.arange(len(scores)).cuda(), objs.flatten()]]
-        #     max_n = torch.max(scores, 1, keepdim=True)[0]
-        #     loss = torch.sum(- pos_scores + max_n + torch.log(torch.sum(torch.exp(scores - max_n),1))) 
-
-        #     # loss backward
-        #     loss.backward()
-        #     self.optimizer.step()
-
-        #     # avoid NaN
-        #     # for p in self.model.parameters():
-        #     #     X = p.data.clone()
-        #     #     flag = X != X
-        #     #     X[flag] = np.random.random()
-        #     #     p.data.copy_(X)
-
-        #     # cover tail entity or not
-        #     reach_tails = (pos_scores == 0).detach().int().reshape(-1).cpu().tolist()
-        #     reach_tails_list += reach_tails
-        #     epoch_loss += loss.item()
-        #     break
-        # self.t_time += time.time() - t_time
+            assert scores.shape[0] == batch_idxs.shape[0]
+            loss = self.compute_local_loss(scores, batch_idxs, query_tail_idxs, query_sub_idxs)
+            loss.backward()
+            self.optimizer.step()
+            # cover tail entity or not
+            pos_scores = scores[query_tail_idxs]
+            reach_tails = (pos_scores != 0).detach().int().cpu().tolist()
+            reach_tails_list += reach_tails
+            epoch_loss += loss.item()
+            # print("\nLoss with head masking: ", loss.item())
+            if i % 10 == 0:
+                wandb.log({
+                    "batch/loss": loss.item(),
+                    "batch/gnn_lr": self.optimizer.param_groups[0]['lr'],
+                    "batch/proj_lr": self.optimizer.param_groups[1]['lr']
+                })
+        self.t_time += time.time() - t_time
         
-        # # evaluate on val/test set
-        # valid_mrr, out_str = self.evaluate(eval_train=True)    
-        # self.scheduler.step(valid_mrr)
-        print("goodbye")
+        # evaluate on val/test set
+        valid_mrr, metrics = self.evaluate(eval_train=True)    
+        wandb.log({
+            "epoch/avg_loss": epoch_loss / len(self.train_loader),
+            "epoch/train_mrr": metrics['tr_mrr'],
+            "epoch/train_h1": metrics['tr_h1'],
+            "epoch/train_h2": metrics['tr_h2'],
+            "epoch/train_h3": metrics['tr_h3'],
+            "epoch/train_h10": metrics['tr_h10'],
+            "epoch/tr_head_ratio": metrics['tr_head_ratio'],
+            "epoch/val_mrr": metrics['v_mrr'],
+            "epoch/val_h1": metrics['v_h1'],
+            "epoch/val_h2": metrics['v_h2'],
+            "epoch/val_h3": metrics['v_h3'],
+            "epoch/val_h10": metrics['v_h10'],
+            "epoch/v_head_ratio": metrics['v_head_ratio'],
+            "epoch/time": time.time() - start_time
+        })
+        self.scheduler.step(valid_mrr)
+        # # print("goodbye")
         
-        # return valid_mrr, out_str
+        return valid_mrr, metrics, metrics['out_str']
     
     @torch.no_grad()
-    def evaluate(self, eval_train=False, eval_val=True, eval_test=True, verbose=False, rank_CR=False, mean_rank=False):
-        self.model.eval()
+    def evaluate(self, eval_train=False, eval_val=True, eval_test=False, verbose=False, rank_CR=False, mean_rank=False):
+        self.gnn_model.eval()
+        self.projector.eval()
         i_time = time.time()
-        
+        stop = 2
         # eval on train set
         if eval_train:
             print("evaluating on train set...")
+            # print(len(self.train_loader))
+            cnt = 0
+            total = 0
             ranking = []
-            stop = 0
-            train_reach_tails_list = []
+            val_reach_tails_list = []
             if mean_rank: mean_rank_list = []
-            for batch_data in tqdm(self.trainLoader, ncols=50, leave=False):      
+            for i, batch_data in enumerate(tqdm(self.val_train_loader, ncols=50)):      
                 # prepare data            
+                # print(i)
                 subs, rels, objs, subgraph_data = self.prepareData(batch_data)
-                
+                total += subs.shape[0]
+                batch_idxs, _, query_sub_idxs, query_tail_idxs, _, _ = subgraph_data
+                batch_idxs = batch_idxs.cuda()
+                query_tail_idxs = query_tail_idxs.cuda()
+                query_sub_idxs = query_sub_idxs.cuda()
                 # forward
-                scores = self.model(subs, rels, subgraph_data, mode='train')  # keep on GPU
-                
-                # calculate rank - train mode has different obj format, all on GPU
-                objs = objs.flatten()  # flatten to get single target indices
-                batch_size = scores.size(0)
-                
-                # Create ranking for each query in the batch on GPU
-                for i in range(batch_size):
-                    # Get filter for this specific query
-                    filt = self.loader.filters[(subs[i].item(), rels[i].item())]
-                    filt_1hot = torch.zeros(self.n_ent, device=scores.device)
-                    filt_1hot[list(filt)] = 1
-                    
-                    # Calculate rank for single target entity on GPU
-                    target_score = scores[i, objs[i]]
-                    # Count how many entities score higher (excluding filtered entities)
-                    higher_scores = scores[i] > target_score
-                    higher_scores = higher_scores & (1 - filt_1hot).bool()
-                    rank = torch.sum(higher_scores).item() + 1
-                    ranking.append(rank)
-                    
-                    if mean_rank:
-                        mean_rank_list.append(rank)
+                scores = self.gnn_model(subs, rels, subgraph_data, self.projector, mode='valid')  # keep on GPU
+                assert scores.shape[0] == batch_idxs.shape[0] and scores.shape[0] == query_tail_idxs.shape[0]
+                # print(query_tail_idxs.shape, scores.shape, batch_idxs.shape)
+                batch_size = batch_idxs.max().item() + 1
 
-                # cover tails or not - adapted for train mode, on GPU
+                ranks = []
+                # local ranking calculation
                 for i in range(batch_size):
-                    target_score = scores[i, objs[i]]
-                    reach_tail = 1 if target_score.item() == 0 else 0
-                    train_reach_tails_list.append(reach_tail)
-                    
-                stop += 1
-                if stop == 15:
-                    break
+                    subgraph_mask = (batch_idxs == i)
+                    subgraph_scores = scores[subgraph_mask]
+                    labels = query_tail_idxs[subgraph_mask]
+                    target_entities = torch.nonzero(labels)
+                    query_ranks = []
+
+                    for target_ent in target_entities:
+                        target_score = subgraph_scores[target_ent]
+                        higher_scores = subgraph_scores > target_score
+                        higher_scores = higher_scores & (~labels).bool()
+                        rank = torch.sum(higher_scores).item() + 1
+                        query_ranks.append(rank)
+
+                    ranks.extend(query_ranks)
+                    if mean_rank:
+                        mean_rank_list.extend(query_ranks)
+
+                
+
+                # Check if head is in rank 1 of scores
+                best_score = scatter_max(scores, batch_idxs, dim=0)[0]
+                head_score = scores[query_sub_idxs]
+                cnt += torch.sum((head_score >= best_score).int()).item()
+
+                
+                ranking += ranks
+
+                # cover tails or not - on GPU
+                # for i in range(batch_size):
+                #     target_entities = torch.nonzero(objs[i]).squeeze(-1)
+                #     for target_ent in target_entities:
+                #         target_score = scores[i, target_ent]
+                #         reach_tail = 1 if target_score.item() == 0 else 0
+                #         val_reach_tails_list.append(reach_tail)
 
             ranking = np.array(ranking)
-            tr_mrr, tr_h1, tr_h10 = cal_performance(ranking)
+            tr_mrr, tr_h1, tr_h2, tr_h3, tr_h10 = cal_performance(ranking)
+            # print(f'[val]  covering tail ratio: {len(val_reach_tails_list)}, {1 - sum(val_reach_tails_list) / len(val_reach_tails_list)}')
             
             if rank_CR:
                 target_rank = torch.Tensor(ranking).reshape(-1)
@@ -186,70 +318,82 @@ class Trainer:
                     ratio = torch.sum((target_rank <= thre).int()) / len(target_rank)
                     rank_CR.append(float(ratio))
                 print('Train set:\n', rank_CR)
-        
+                
             # save mean rank
             if mean_rank: self.mean_rank_dict['train'] = copy.deepcopy(mean_rank_list)
-                
+            print(f"\nCovering head ratio in train set: {cnt}/{total} = {cnt/total}\n")
+            tr_head_ratio = cnt/total
         else:
-            tr_mrr, tr_h1, tr_h10 = -1, -1, -1
+            tr_mrr, tr_h1, tr_h2, tr_h3, tr_h10 = -1, -1, -1, -1, -1
+        
         
         # eval on val set
         if eval_val:
             print("evaluating on val set...")
+            # print(len(self.val_loader))
             ranking = []
+            cnt = 0
+            total = 0
             val_reach_tails_list = []
             if mean_rank: mean_rank_list = []
-            for batch_data in tqdm(self.valLoader, ncols=50, leave=False):      
-                # prepare data            
+            for i, batch_data in enumerate(tqdm(self.val_loader, ncols=50)):
+                # prepare data
                 subs, rels, objs, subgraph_data = self.prepareData(batch_data)
-                
+                total += subs.shape[0]
+                batch_idxs, _, query_sub_idxs, query_tail_idxs, _, _ = subgraph_data
+                batch_idxs = batch_idxs.cuda()
+                query_tail_idxs = query_tail_idxs.cuda()
+                query_sub_idxs = query_sub_idxs.cuda()
                 # forward
-                scores = self.model(subs, rels, subgraph_data, mode='valid')  # keep on GPU
+                scores = self.gnn_model(subs, rels, subgraph_data, self.projector, mode='valid')  # keep on GPU
+                assert scores.shape[0] == batch_idxs.shape[0] and scores.shape[0] == query_tail_idxs.shape[0]
+                # print(query_tail_idxs.shape, scores.shape, batch_idxs.shape)
+                batch_size = batch_idxs.max().item() + 1
 
-                # calculate rank on GPU
-                batch_size = scores.size(0)
-                filters = []
-                for i in range(batch_size):
-                    filt = self.loader.filters[(subs[i].item(), rels[i].item())]
-                    filt_1hot = torch.zeros(self.n_ent, device=scores.device)
-                    filt_1hot[list(filt)] = 1
-                    filters.append(filt_1hot)
-                filters = torch.stack(filters)  # [batch_size, n_ent]
                 
-                # Calculate ranks on GPU using cal_ranks equivalent
                 ranks = []
+                # local ranking calculation
                 for i in range(batch_size):
-                    # Get target entities for this query (multi-hot format)
-                    target_entities = torch.nonzero(objs[i]).squeeze(-1)
+                    subgraph_mask = (batch_idxs == i)
+                    subgraph_scores = scores[subgraph_mask]
+                    labels = query_tail_idxs[subgraph_mask]
+                    target_entities = torch.nonzero(labels)
                     query_ranks = []
-                    
+
                     for target_ent in target_entities:
-                        target_score = scores[i, target_ent]
-                        # Count entities with higher scores (excluding filtered)
-                        higher_scores = scores[i] > target_score
-                        higher_scores = higher_scores & (1 - filters[i]).bool()
+                        target_score = subgraph_scores[target_ent]
+                        higher_scores = subgraph_scores > target_score
+                        higher_scores = higher_scores & (~labels).bool()
                         rank = torch.sum(higher_scores).item() + 1
                         query_ranks.append(rank)
-                    
-                    # Use minimum rank (best) for this query
+
                     ranks.extend(query_ranks)
                     if mean_rank:
                         mean_rank_list.extend(query_ranks)
-
+                
                 ranking += ranks
 
+                # Check if head is in rank 1 of scores
+                    # subgraph_mask = (batch_idxs == i)
+                    # subgraph_scores = scores[subgraph_mask]
+                best_score = scatter_max(scores, batch_idxs, dim=0)[0]
+                head_score = scores[query_sub_idxs]
+                cnt += torch.sum((head_score >= best_score).int()).item()
+                
+                
+
                 # cover tails or not - on GPU
-                for i in range(batch_size):
-                    target_entities = torch.nonzero(objs[i]).squeeze(-1)
-                    for target_ent in target_entities:
-                        target_score = scores[i, target_ent]
-                        reach_tail = 1 if target_score.item() == 0 else 0
-                        val_reach_tails_list.append(reach_tail)
+                # for i in range(batch_size):
+                #     target_entities = torch.nonzero(objs[i]).squeeze(-1)
+                #     for target_ent in target_entities:
+                #         target_score = scores[i, target_ent]
+                #         reach_tail = 1 if target_score.item() == 0 else 0
+                #         val_reach_tails_list.append(reach_tail)
 
             ranking = np.array(ranking)
-            v_mrr, v_h1, v_h10 = cal_performance(ranking)
-            # print(f'[val]  covering tail ratio: {len(val_reach_tails_list)}, {1 - sum(val_reach_tails_list) / len(val_reach_tails_list)}')
+            v_mrr, v_h1, v_h2, v_h3, v_h10 = cal_performance(ranking)
             
+
             if rank_CR:
                 target_rank = torch.Tensor(ranking).reshape(-1)
                 rank_thre = [int(i/100 * self.loader.n_ent) for i in range(1,101)]
@@ -261,93 +405,89 @@ class Trainer:
                 
             # save mean rank
             if mean_rank: self.mean_rank_dict['val'] = copy.deepcopy(mean_rank_list)
-                
+            print(f"\nCovering head ratio in val set: {cnt}/{total} = {cnt/total}\n")
+            v_head_ratio = cnt/total
+
         else:
-            v_mrr, v_h1, v_h10 = -1, -1, -1
+            v_mrr, v_h1, v_h2, v_h3, v_h10 = -1, -1, -1, -1, -1
         
         # eval on test set
         if eval_test:
             print("evaluating on test set...")
-            ranking = []
-            test_reach_tails_list = []
-            if mean_rank: mean_rank_list = []
-            for batch_data in tqdm(self.testLoader, ncols=50, leave=False):        
-                # prepare data            
-                subs, rels, objs, subgraph_data = self.prepareData(batch_data)
-                
-                # forward
-                scores = self.model(subs, rels, subgraph_data, mode='test')  # keep on GPU
-
-                # calculate rank on GPU
-                batch_size = scores.size(0)
-                filters = []
-                for i in range(batch_size):
-                    filt = self.loader.filters[(subs[i].item(), rels[i].item())]
-                    filt_1hot = torch.zeros(self.n_ent, device=scores.device)
-                    filt_1hot[list(filt)] = 1
-                    filters.append(filt_1hot)
-                filters = torch.stack(filters)  # [batch_size, n_ent]
-                
-                # Calculate ranks on GPU
-                ranks = []
-                for i in range(batch_size):
-                    # Get target entities for this query (multi-hot format)
-                    target_entities = torch.nonzero(objs[i]).squeeze(-1)
-                    query_ranks = []
-                    
-                    for target_ent in target_entities:
-                        target_score = scores[i, target_ent]
-                        # Count entities with higher scores (excluding filtered)
-                        higher_scores = scores[i] > target_score
-                        higher_scores = higher_scores & (1 - filters[i]).bool()
-                        rank = torch.sum(higher_scores).item() + 1
-                        query_ranks.append(rank)
-                    
-                    # Use all ranks for this query
-                    ranks.extend(query_ranks)
-                    if mean_rank:
-                        mean_rank_list.extend(query_ranks)
-
-                ranking += ranks
-
-                # cover tails or not - on GPU
-                for i in range(batch_size):
-                    target_entities = torch.nonzero(objs[i]).squeeze(-1)
-                    for target_ent in target_entities:
-                        target_score = scores[i, target_ent]
-                        reach_tail = 1 if target_score.item() == 0 else 0
-                        test_reach_tails_list.append(reach_tail)
-
-            ranking = np.array(ranking)
-            t_mrr, t_h1, t_h10 = cal_performance(ranking)
-            # print(f'[test] covering tail ratio: {len(test_reach_tails_list)}, {1 - sum(test_reach_tails_list) / len(test_reach_tails_list)}')
-            
-            if rank_CR:
-                target_rank = torch.Tensor(ranking).reshape(-1)
-                rank_thre = [int(i/100 * self.loader.n_ent) for i in range(1,101)]
-                rank_CR = []
-                for thre in rank_thre:
-                    ratio = torch.sum((target_rank <= thre).int()) / len(target_rank)
-                    rank_CR.append(float(ratio))
-                print('Test set:\n', rank_CR)
-                
-            # save mean rank
-            if mean_rank: self.mean_rank_dict['test'] = copy.deepcopy(mean_rank_list)
             
         else:
-            t_mrr, t_h1, t_h10 = -1, -1, -1
-            
+            t_mrr, t_h1, t_h2, t_h3, t_h10 = -1, -1, -1, -1, -1
+        # print("goodbye")
         i_time = time.time() - i_time
-        out_str = '[TRAIN] MRR:%.4f H@1:%.4f H@10:%.4f\t [VALID] MRR:%.4f H@1:%.4f H@10:%.4f\t [TEST] MRR:%.4f H@1:%.4f H@10:%.4f \t[TIME] train:%.4f inference:%.4f\n'%(tr_mrr, tr_h1, tr_h10, v_mrr, v_h1, v_h10, t_mrr, t_h1, t_h10, self.t_time, i_time)
-        return v_mrr, out_str
+        out_str = '[TRAIN] MRR:%.4f H@1:%.4f H@2:%.4f H@3:%.4f H@10:%.4f\t [VALID] MRR:%.4f H@1:%.4f H@2:%.4f H@3:%.4f H@10:%.4f\t [TEST] MRR:%.4f H@1:%.4f H@2:%.4f H@3:%.4f H@10:%.4f \t[TIME] train:%.4f inference:%.4f\n'%(tr_mrr, tr_h1, tr_h2, tr_h3, tr_h10, v_mrr, v_h1, v_h2, v_h3, v_h10, t_mrr, t_h1, t_h2, t_h3, t_h10, self.t_time, i_time)
+        return v_mrr, {'tr_mrr': tr_mrr, 'tr_h1': tr_h1, 'tr_h2': tr_h2, 'tr_h3': tr_h3, 'tr_h10': tr_h10, 'v_mrr': v_mrr, 'v_h1': v_h1, 'v_h2': v_h2, 'v_h3': v_h3, 'v_h10': v_h10, 'out_str': out_str, 'tr_head_ratio': tr_head_ratio, 'v_head_ratio': v_head_ratio}
+
+def train(trainer, args, resume_from=None):
+    """Train the model with optional resume capability.
+    
+    Args:
+        trainer: Trainer object
+        args: Training arguments
+        resume_from: Path to checkpoint file to resume training from. If None, start fresh.
+    """
+    # WANDB: Init
+    wandb.init(
+        project=args.project_name,
+        config={
+            "gnn_lr": args.gnn_lr,
+            "projector_lr": args.projector_lr,
+            "epochs": args.epochs,
+            "gnn_layers": GNN_config.n_layer,
+            "proj_layers": Projector_config.n_layers
+        }
+    )
+
+    best_mrr, bearing = 0, 0
+    best_str = ""
+    start_epoch = 0
+    
+    # Load checkpoint if resuming
+    if resume_from is not None:
+        checkpoint_state = trainer.load_checkpoint(resume_from)
+        start_epoch = checkpoint_state['epoch'] + 1
+        best_mrr = checkpoint_state['best_mrr']
+        print(f"Resuming training from epoch {start_epoch} with best_mrr={best_mrr}")
+
+    for epoch in range(start_epoch, args.epochs):
+        mrr, metrics, out_str = trainer.train_batch(epoch)
+            
+        if mrr > best_mrr:
+            best_mrr = mrr
+            best_str = out_str
+            print(f"Epoch {epoch} | New Best Var MRR: {metrics['v_mrr']:.4f} | Train MRR: {metrics['tr_mrr']:.4f}")
+            bearing = 0
+            
+            # Save checkpoint
+            best_tag = f'ValMRR_{str(mrr)[:5]}'
+            trainer.saveModelToFiles(args, best_tag, epoch, best_mrr)
+            
+            # WANDB: Track best metric
+            wandb.run.summary["best_mrr"] = best_mrr
+        else:
+            bearing += 1
+            
+        if bearing >= args.bearing: 
+            print(f'Early stopping at epoch {epoch+1}.')
+            break
+    
+    print("Training finished.")
+    print(f"Best Results: {best_str}")
+    wandb.finish()
+    return best_mrr
 
 class GNN_config:
     n_layer = 8
+    active_layer = 3
     hidden_dim = 64
     attn_dim = 4
     dropout = 0.3
     n_ent = 1024 # subgraph size
-    shortcut = False
+    shortcut = True
     readout = 'linear'
     concatHidden = True
     initializer = 'binary'
@@ -356,6 +496,7 @@ class GNN_config:
         llm_description_aligned_emb = pkl.load(f)
     llm_emb = list(llm_description_aligned_emb.values())
     llm_emb = torch.stack(llm_emb, dim=0)
+    pretrain_model_path = "topk_0.1_layer_8_ValMRR_0.437.pt"
     del(llm_description_aligned_emb)
 
 class Projector_config:
@@ -363,34 +504,89 @@ class Projector_config:
     in_dim = 4096
     hidden_dims = [512, 256]
     out_dim = 64
+    pretrain_model_path = "weights/pretrain/projector/best_projector_HNM.pt"
 
 class Training_args:
-    gnn_lr = 1e-4
-    projector_lr = 1e-3
+    project_name = "train_align_finetune"
+    gnn_lr = 5e-4
+    projector_lr = 5e-5
     epochs = 50
+    bearing = 8
+    device = 'cuda:0'
+
+
 
 if __name__ == "__main__":
-    with open("for_finetuning.pkl", "rb") as f:
+    with open("data_for_GNN_finetune_another_way.pkl", "rb") as f:
         data = pkl.load(f)
+    data = data[:int(0.1 * len(data))]
+    os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+
+    seed = 21
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True, warn_only=True)
     
+    # Worker init function for DataLoader
+    def seed_worker(worker_id):
+        worker_seed = seed + worker_id
+        np.random.seed(worker_seed)
+        random.seed(worker_seed)
+
     train_len = int(len(data) * 0.8)
     train_data = data[:train_len]
     val_data = data[train_len:]
+    
+    
+    # train_rel = []
+    # for data in train_data:
+    #     train_rel.extend([a[1] for a in data['drop_edges']])
+    # train_rel = torch.unique(torch.tensor(train_rel).flatten()).tolist()
+    # val_rel = []
+    # for data in val_data:
+    #     val_rel.extend([a[1] for a in data['drop_edges']])
+    # val_rel = torch.unique(torch.tensor(val_rel).flatten()).tolist()
+    # val_rel = set(val_rel) - set(train_rel)
+    # print("Number of new relations in val set:", len(val_rel))
+    # exit()
+
+    # Create generator for DataLoader reproducibility
+    g = torch.Generator()
+    g.manual_seed(seed)
+    
     train_loader = DataLoader2(train_data, mode='train')
-    train_dataloader = DataLoader(train_loader, batch_size=32, shuffle=True, collate_fn=train_loader.collate_fn)
-    val_loader = DataLoader2(val_data, mode='eval')
-    val_dataloader = DataLoader(val_loader, batch_size=32, shuffle=False, collate_fn=val_loader.collate_fn)
-
-
+    val_train_loader = DataLoader2(train_data, mode='val')
+    train_dataloader = DataLoader(train_loader, batch_size=32, shuffle=True, collate_fn=train_loader.collate_fn, generator=g)   
+    val_loader = DataLoader2(val_data, mode='val')  
+    val_dataloader = DataLoader(val_loader, batch_size=32, shuffle=False, collate_fn=val_loader.collate_fn, )
+    val_train_loader = DataLoader(val_train_loader, batch_size=32, shuffle=False, collate_fn=val_train_loader.collate_fn)
     gnn_model = GNN_auto(GNN_config, train_loader)
-    pretrain_model_path = "weights/topk_0.1_layer_8_ValMRR_0.437.pt"
-    pretrain_gnn_model = loadModel(pretrain_model_path, gnn_model)
+    pretrain_gnn_model = loadModel(GNN_config.pretrain_model_path, gnn_model)
 
     projector_model = Projector(Projector_config.in_dim, Projector_config.hidden_dims, Projector_config.out_dim, Projector_config.n_layers)
-    pretrain_projector_path = "weights/projectors/best_projector_HNM.pt"
-    pretrain_projector_model = loadModel(pretrain_projector_path, projector_model)
+    pretrain_projector_model = loadModel(Projector_config.pretrain_model_path, projector_model)
     print("Models loaded successfully.")
-
-    trainer = Trainer(pretrain_gnn_model, pretrain_projector_model, train_dataloader, val_dataloader, Training_args)
-    trainer.train_batch()
+    # print("GNN Model Structure:")
+    print(next(pretrain_gnn_model.parameters()).device, next(pretrain_projector_model.parameters()).device)
+    trainer = Trainer(pretrain_gnn_model, pretrain_projector_model, train_dataloader, val_dataloader, val_train_loader, Training_args)
+    
+    # Resume from checkpoint: Uncomment to resume from the latest checkpoint
+    # checkpoint_path = get_latest_checkpoint()
+    # if checkpoint_path:
+    #     print(f"Found checkpoint: {checkpoint_path}")
+    #     train(trainer, Training_args, resume_from=checkpoint_path)
+    # else:
+    #     print("No checkpoint found, starting fresh training.")
+    #     train(trainer, Training_args)
+    
+    # # Or specify a specific checkpoint path:
+    # train(trainer, Training_args, resume_from='saveModels/topk_ValMRR_0.123.pt')
+    
+    # Start fresh training (default)
+    train(trainer, Training_args)
         
