@@ -53,7 +53,7 @@ class Trainer:
     def __init__(self, gnn_model, projector, train_loader, val_loader, val_train_loader, args):
         self.gnn_model = gnn_model.to(args.device)
         self.projector = projector.to(args.device)
-        gnn_model._setup_readout() 
+        # gnn_model._setup_readout() 
         self.args = args
         self.t_time = 0
         self.train_loader = train_loader
@@ -213,6 +213,8 @@ class Trainer:
                     "batch/gnn_lr": self.optimizer.param_groups[0]['lr'],
                     "batch/proj_lr": self.optimizer.param_groups[1]['lr']
                 })
+            if i == stop:
+                break
         self.t_time += time.time() - t_time
         
         # evaluate on val/test set
@@ -254,8 +256,8 @@ class Trainer:
             val_reach_tails_list = []
             if mean_rank: mean_rank_list = []
             for i, batch_data in enumerate(tqdm(self.val_train_loader, ncols=50)):      
-                # prepare data            
-                # print(i)
+                if i == stop:
+                    break
                 subs, rels, objs, subgraph_data = self.prepareData(batch_data)
                 total += subs.shape[0]
                 batch_idxs, _, query_sub_idxs, query_tail_idxs, _, _ = subgraph_data
@@ -338,6 +340,8 @@ class Trainer:
             if mean_rank: mean_rank_list = []
             for i, batch_data in enumerate(tqdm(self.val_loader, ncols=50)):
                 # prepare data
+                if i == stop:
+                    break
                 subs, rels, objs, subgraph_data = self.prepareData(batch_data)
                 total += subs.shape[0]
                 batch_idxs, _, query_sub_idxs, query_tail_idxs, _, _ = subgraph_data
@@ -464,7 +468,7 @@ def train(trainer, args, resume_from=None):
             
             # Save checkpoint
             best_tag = f'ValMRR_{str(mrr)[:5]}'
-            trainer.saveModelToFiles(args, best_tag, epoch, best_mrr)
+            # trainer.saveModelToFiles(args, best_tag, epoch, best_mrr)
             
             # WANDB: Track best metric
             wandb.run.summary["best_mrr"] = best_mrr
@@ -487,7 +491,9 @@ class GNN_config:
     attn_dim = 4
     dropout = 0.3
     n_ent = 1024 # subgraph size
+    n_rel = 237
     shortcut = True
+    act = 'relu'
     readout = 'linear'
     concatHidden = True
     initializer = 'binary'
@@ -496,7 +502,7 @@ class GNN_config:
         llm_description_aligned_emb = pkl.load(f)
     llm_emb = list(llm_description_aligned_emb.values())
     llm_emb = torch.stack(llm_emb, dim=0)
-    pretrain_model_path = "topk_0.1_layer_8_ValMRR_0.437.pt"
+    # pretrain_model_path = "topk_0.1_layer_8_ValMRR_0.437.pt"
     del(llm_description_aligned_emb)
 
 class Projector_config:
@@ -504,7 +510,7 @@ class Projector_config:
     in_dim = 4096
     hidden_dims = [512, 256]
     out_dim = 64
-    pretrain_model_path = "weights/pretrain/projector/best_projector_HNM.pt"
+    # pretrain_model_path = "weights/pretrain/projector/best_projector_HNM.pt"
 
 class Training_args:
     project_name = "train_align_finetune"
@@ -517,6 +523,12 @@ class Training_args:
 
 
 if __name__ == "__main__":
+
+    # using wandb or not
+    # if not use_wandb:
+    os.environ["WANDB_MODE"] = "disabled"
+
+
     with open("data_for_GNN_finetune_another_way.pkl", "rb") as f:
         data = pkl.load(f)
     data = data[:int(0.1 * len(data))]
@@ -566,14 +578,16 @@ if __name__ == "__main__":
     val_dataloader = DataLoader(val_loader, batch_size=32, shuffle=False, collate_fn=val_loader.collate_fn, )
     val_train_loader = DataLoader(val_train_loader, batch_size=32, shuffle=False, collate_fn=val_train_loader.collate_fn)
     gnn_model = GNN_auto(GNN_config, train_loader)
-    pretrain_gnn_model = loadModel(GNN_config.pretrain_model_path, gnn_model)
+    if 'pretrain_model_path' in GNN_config.__dict__:
+        gnn_model = loadModel(GNN_config.pretrain_model_path, gnn_model)
+        print("GNN model loaded successfully.")
 
     projector_model = Projector(Projector_config.in_dim, Projector_config.hidden_dims, Projector_config.out_dim, Projector_config.n_layers)
-    pretrain_projector_model = loadModel(Projector_config.pretrain_model_path, projector_model)
-    print("Models loaded successfully.")
+    if 'pretrain_model_path' in Projector_config.__dict__:
+        projector_model = loadModel(Projector_config.pretrain_model_path, projector_model)
+        print("Projector model loaded successfully.")
     # print("GNN Model Structure:")
-    print(next(pretrain_gnn_model.parameters()).device, next(pretrain_projector_model.parameters()).device)
-    trainer = Trainer(pretrain_gnn_model, pretrain_projector_model, train_dataloader, val_dataloader, val_train_loader, Training_args)
+    trainer = Trainer(gnn_model, projector_model, train_dataloader, val_dataloader, val_train_loader, Training_args)
     
     # Resume from checkpoint: Uncomment to resume from the latest checkpoint
     # checkpoint_path = get_latest_checkpoint()
