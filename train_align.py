@@ -487,16 +487,18 @@ class GNN_config:
     attn_dim = 4
     dropout = 0.3
     n_ent = 1024 # subgraph size
+    n_rel = 237
     shortcut = True
     readout = 'linear'
     concatHidden = True
-    initializer = 'binary'
+    initializer = 'relation'
     llm_description_emb_path = "data_for_CL/llm_description_aligned_emb.pkl"
+    ## 474 relations / 20 versions each / 4096 dimensional
     with open(llm_description_emb_path, "rb") as f:
         llm_description_aligned_emb = pkl.load(f)
     llm_emb = list(llm_description_aligned_emb.values())
     llm_emb = torch.stack(llm_emb, dim=0)
-    pretrain_model_path = "topk_0.1_layer_8_ValMRR_0.437.pt"
+    # pretrain_model_path = "topk_0.1_layer_8_ValMRR_0.437.pt"
     del(llm_description_aligned_emb)
 
 class Projector_config:
@@ -504,12 +506,12 @@ class Projector_config:
     in_dim = 4096
     hidden_dims = [512, 256]
     out_dim = 64
-    pretrain_model_path = "weights/pretrain/projector/best_projector_HNM.pt"
+    # pretrain_model_path = "weights/pretrain/projector/best_projector_HNM.pt"
 
 class Training_args:
     project_name = "train_align_finetune"
     gnn_lr = 5e-4
-    projector_lr = 5e-5
+    projector_lr = 5e-4
     epochs = 50
     bearing = 8
     device = 'cuda:0'
@@ -517,6 +519,9 @@ class Training_args:
 
 
 if __name__ == "__main__":
+
+    os.environ["WANDB_MODE"] = "disabled"
+
     with open("data_for_GNN_finetune_another_way.pkl", "rb") as f:
         data = pkl.load(f)
     data = data[:int(0.1 * len(data))]
@@ -562,18 +567,21 @@ if __name__ == "__main__":
     train_loader = DataLoader2(train_data, mode='train')
     val_train_loader = DataLoader2(train_data, mode='val')
     train_dataloader = DataLoader(train_loader, batch_size=32, shuffle=True, collate_fn=train_loader.collate_fn, generator=g)   
+
     val_loader = DataLoader2(val_data, mode='val')  
     val_dataloader = DataLoader(val_loader, batch_size=32, shuffle=False, collate_fn=val_loader.collate_fn, )
+    
     val_train_loader = DataLoader(val_train_loader, batch_size=32, shuffle=False, collate_fn=val_train_loader.collate_fn)
     gnn_model = GNN_auto(GNN_config, train_loader)
-    pretrain_gnn_model = loadModel(GNN_config.pretrain_model_path, gnn_model)
-
+    if "pretrain_model_path" in GNN_config.__dict__:
+        gnn_model = loadModel(GNN_config.pretrain_model_path, gnn_model)
+        print("GNN Model loaded successfully.")
     projector_model = Projector(Projector_config.in_dim, Projector_config.hidden_dims, Projector_config.out_dim, Projector_config.n_layers)
-    pretrain_projector_model = loadModel(Projector_config.pretrain_model_path, projector_model)
-    print("Models loaded successfully.")
+    if "pretrain_model_path" in Projector_config.__dict__:
+        projector_model = loadModel(Projector_config.pretrain_model_path, projector_model)
+        print("Projector Model loaded successfully.")
     # print("GNN Model Structure:")
-    print(next(pretrain_gnn_model.parameters()).device, next(pretrain_projector_model.parameters()).device)
-    trainer = Trainer(pretrain_gnn_model, pretrain_projector_model, train_dataloader, val_dataloader, val_train_loader, Training_args)
+    trainer = Trainer(gnn_model, projector_model, train_dataloader, val_dataloader, val_train_loader, Training_args)
     
     # Resume from checkpoint: Uncomment to resume from the latest checkpoint
     # checkpoint_path = get_latest_checkpoint()
