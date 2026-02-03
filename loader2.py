@@ -58,8 +58,8 @@ def getBatchSubgraph(subgraph_list: list):
     abs_idxs = torch.LongTensor(abs_idxs)
     batch_sampled_edges = torch.cat(batch_sampled_edges, dim=0)
     edge_batch_idxs = torch.LongTensor(edge_batch_idxs)
-    query_sub_idxs = torch.cat(query_sub_idxs)
-    query_tail_idxs = torch.cat(query_tail_idxs)
+    query_sub_idxs = torch.cat(query_sub_idxs).squeeze()
+    query_tail_idxs = torch.cat(query_tail_idxs).squeeze()
     # print("query_tail_idxs:", query_tail_idxs)
     tmp = torch.zeros(len(batch_idxs), dtype=torch.bool)
     tmp[query_tail_idxs] = 1
