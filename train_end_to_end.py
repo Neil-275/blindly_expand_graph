@@ -53,18 +53,20 @@ def loadModel(filePath, model):
         # self.optimizer = Adam(self.model.parameters(), lr=self.args.lr, weight_decay=self.args.lamb)
 
 class Trainer:
-    def __init__(self, gnn_model, projector, train_loader, val_loader, val_train_loader, args):
+    def __init__(self, gnn_model, projector, train_loader, val_loader, val_train_loader, ind_val_loader, args):
         self.gnn_model = gnn_model.to(args.device)
         self.projector = projector.to(args.device)
         self.temperature = args.temperature 
+        self.lamda = args.lamda
         # gnn_model._setup_readout() 
         self.args = args
         self.t_time = 0
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.val_train_loader = val_train_loader
+        self.ind_val_loader = ind_val_loader
         # print(len(val_loader))
-        self.optimizer_gnn, self.optimizer_proj, self.scheduler_gnn, self.scheduler_proj = self.setup_training(train_loader)
+        self.optimizer, self.scheduler = self.setup_training(train_loader)
 
     def setup_training(self, train_loader):
         """
@@ -72,33 +74,26 @@ class Trainer:
         """
         # Use weight decay to regularize the node embeddings
 
-
-        # Create parameter groups
-        # param_groups = [
-        #     {'params': self.gnn_model.parameters(), 'lr': self.args.gnn_lr},
-        #     {'params': self.projector.parameters(), 'lr': self.args.projector_lr}
-        # ]
+    
+        param_groups = [
+            {'params': self.gnn_model.parameters(), 'lr': self.args.gnn_lr},
+            {'params': self.projector.parameters(), 'lr': self.args.projector_lr}
+        ]
 
         # Create optimizer with different learning rates
-        optimizer_gnn = Adam(self.gnn_model.parameters(), lr=self.args.gnn_lr, weight_decay=1e-2)
-        optimizer_proj = Adam(self.projector.parameters(), lr=self.args.projector_lr, weight_decay=1e-2)
+        optimizer = Adam(param_groups, weight_decay=1e-2)
+        # optimizer_cl = Adam(param_cl, weight_decay=1e-2)
         # ReduceLROnPlateau reduces LR when validation metric plateaus
-        scheduler_gnn = ReduceLROnPlateau(
-            optimizer_gnn, 
+        scheduler = ReduceLROnPlateau(
+            optimizer, 
             mode='max', 
             factor=0.5, 
             patience=2, 
             min_lr=self.args.gnn_lr / 20
         )
-        scheduler_proj = ReduceLROnPlateau(
-            optimizer_proj, 
-            mode='max', 
-            factor=0.5, 
-            patience=2, 
-            min_lr=self.args.projector_lr / 20
-        )
+
     
-        return optimizer_gnn, optimizer_proj, scheduler_gnn, scheduler_proj 
+        return optimizer,  scheduler
     
     def prepareData(self, batch_data):
         subs, rels, objs, batch_idxs, abs_idxs, query_sub_idxs, query_tail_idxs, edge_batch_idxs, batch_sampled_edges = batch_data
@@ -145,10 +140,8 @@ class Trainer:
         torch.save({
                 'gnn_model': self.gnn_model.state_dict(),
                 'projector': self.projector.state_dict(),
-                'optimizer_gnn_state_dict': self.optimizer_gnn.state_dict(),
-                'optimizer_proj_state_dict': self.optimizer_proj.state_dict(),
-                'scheduler_gnn_state_dict': self.scheduler_gnn.state_dict(),
-                'scheduler_proj_state_dict': self.scheduler_proj.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'scheduler_state_dict': self.scheduler.state_dict(),
                 'best_mrr': best_mrr,
                 'epoch': epoch,
                 }, savePath)
@@ -172,16 +165,12 @@ class Trainer:
 
         if checkpoint.get('projector') is not None:
             self.projector.load_state_dict(checkpoint['projector'])
-        if checkpoint.get('optimizer_gnn_state_dict') is not None:
-            self.optimizer_gnn.load_state_dict(checkpoint['optimizer_gnn_state_dict'])
-        if checkpoint.get('optimizer_proj_state_dict') is not None:
-            self.optimizer_proj.load_state_dict(checkpoint['optimizer_proj_state_dict'])
+        if checkpoint.get('optimizer_state_dict') is not None:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         
         # Load scheduler state if available
-        if checkpoint.get('scheduler_gnn_state_dict') is not None:
-            self.scheduler_gnn.load_state_dict(checkpoint['scheduler_gnn_state_dict'])
-        if checkpoint.get('scheduler_proj_state_dict') is not None:
-            self.scheduler_proj.load_state_dict(checkpoint['scheduler_proj_state_dict'])
+        if checkpoint.get('scheduler_state_dict') is not None:
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         
         epoch = checkpoint.get('epoch', 0)
         best_mrr = checkpoint.get('best_mrr', 0)
@@ -215,8 +204,7 @@ class Trainer:
             query_sub_idxs = query_sub_idxs.cuda()
             # forward
             # print("shape check:", subs.shape, rels.shape, objs.shape)
-            self.optimizer_gnn.zero_grad()
-            self.optimizer_proj.zero_grad()
+            self.optimizer.zero_grad()
             # scores = self.gnn_model(subs, rels, subgraph_data, self.projector)
             scores = self.gnn_model(subs, rels, subgraph_data, self.projector, use_llm=True)  # keep on GPU
             assert scores.shape[0] == batch_idxs.shape[0]
@@ -235,7 +223,7 @@ class Trainer:
                 llm_emb_rel = llm_emb[unique_rels, ver_idx, :]
 
                 proj_emb_rel = self.projector.models[i_layer](llm_emb_rel) 
-                gnn_emb_rel = self.gnn_model.gnn_layers[i_layer].rela_embed.weight.detach()
+                gnn_emb_rel = self.gnn_model.gnn_layers[i_layer].rela_embed.weight
 
                 proj_emb_rel = F.normalize(proj_emb_rel, p=2, dim=1)
                 gnn_emb_rel = F.normalize(gnn_emb_rel, p=2, dim=1)
@@ -246,33 +234,34 @@ class Trainer:
                 # print("logits shape:", logits.shape)
                 layer_cont_loss = F.cross_entropy(logits, unique_rels)
                 contrastive_loss = contrastive_loss + layer_cont_loss
-                
-                break
-            break
+                # break
+          
 
-            total_loss = loss_lp + contrastive_loss
+            total_loss = loss_lp + self.lamda * contrastive_loss
+            total_loss = loss_lp
             total_loss.backward()
 
-            self.optimizer_gnn.step()
-            self.optimizer_proj.step()
+            self.optimizer.step()
             # cover tail entity or not
             pos_scores = scores[query_tail_idxs]
             reach_tails = (pos_scores != 0).detach().int().cpu().tolist()
             reach_tails_list += reach_tails
             epoch_loss += total_loss.item()
+            
+            break
             # print("\nLoss with head masking: ", loss_lp.item())
             if i % 10 == 0:
                 wandb.log({
                     "batch/total_loss": total_loss.item(),
                     "batch/lp_loss": loss_lp.item(),
                     "batch/contrastive_loss": contrastive_loss.item(),
-                    "batch/gnn_lr": self.optimizer_gnn.param_groups[0]['lr'],
-                    "batch/proj_lr": self.optimizer_proj.param_groups[0]['lr']
+                    "batch/gnn_lr": self.optimizer.param_groups[0]['lr'],
+                    "batch/proj_lr": self.optimizer.param_groups[0]['lr']
                 })
         self.t_time += time.time() - t_time
         
         # evaluate on val/test set
-        valid_mrr, metrics = self.evaluate(eval_train=True)    
+        valid_mrr, metrics = self.evaluate(eval_train=True, eval_test=True)    
         wandb.log({
             "epoch/avg_loss": epoch_loss / len(self.train_loader),
             "epoch/train_mrr": metrics['tr_mrr'],
@@ -287,10 +276,14 @@ class Trainer:
             "epoch/val_h3": metrics['v_h3'],
             "epoch/val_h10": metrics['v_h10'],
             "epoch/v_head_ratio": metrics['v_head_ratio'],
+            "epoch/ind_mrr": metrics['ind_mrr'],
+            "epoch/ind_h1": metrics['ind_h1'],
+            "epoch/ind_h2": metrics['ind_h2'],
+            "epoch/ind_h3": metrics['ind_h3'],
+            "epoch/ind_h10": metrics['ind_h10'],
             "epoch/time": time.time() - start_time
         })
-        self.scheduler_gnn.step(valid_mrr)
-        self.scheduler_proj.step(valid_mrr)
+        self.scheduler.step(valid_mrr)
         # # print("goodbye")
         
         return valid_mrr, metrics, metrics['out_str']
@@ -356,13 +349,6 @@ class Trainer:
                 
                 ranking += ranks
 
-                # cover tails or not - on GPU
-                # for i in range(batch_size):
-                #     target_entities = torch.nonzero(objs[i]).squeeze(-1)
-                #     for target_ent in target_entities:
-                #         target_score = scores[i, target_ent]
-                #         reach_tail = 1 if target_score.item() == 0 else 0
-                #         val_reach_tails_list.append(reach_tail)
 
             ranking = np.array(ranking)
             tr_mrr, tr_h1, tr_h2, tr_h3, tr_h10 = cal_performance(ranking)
@@ -440,16 +426,6 @@ class Trainer:
                 head_score = scores[query_sub_idxs]
                 cnt += torch.sum((head_score >= best_score).int()).item()
                 
-                
-
-                # cover tails or not - on GPU
-                # for i in range(batch_size):
-                #     target_entities = torch.nonzero(objs[i]).squeeze(-1)
-                #     for target_ent in target_entities:
-                #         target_score = scores[i, target_ent]
-                #         reach_tail = 1 if target_score.item() == 0 else 0
-                #         val_reach_tails_list.append(reach_tail)
-
             ranking = np.array(ranking)
             v_mrr, v_h1, v_h2, v_h3, v_h10 = cal_performance(ranking)
             
@@ -472,15 +448,92 @@ class Trainer:
             v_mrr, v_h1, v_h2, v_h3, v_h10 = -1, -1, -1, -1, -1
         
         # eval on test set
+        # if eval_test:
+        #     print("evaluating on test set...")
+            
+        # else:
+        #     t_mrr, t_h1, t_h2, t_h3, t_h10 = -1, -1, -1, -1, -1
+
         if eval_test:
             print("evaluating on test set...")
+            # print(len(self.train_loader))
+            cnt = 0
+            total = 0
+            ranking = []
+            if mean_rank: mean_rank_list = []
+            for i, batch_data in enumerate(tqdm(self.ind_val_loader, ncols=50)):      
+                # prepare data            
+                # print(i)
+                subs, rels, objs, subgraph_data = self.prepareData(batch_data)
+                total += subs.shape[0]
+                batch_idxs, _, query_sub_idxs, query_tail_idxs, _, _ = subgraph_data
+                batch_idxs = batch_idxs.cuda()
+                query_tail_idxs = query_tail_idxs.cuda()
+                query_sub_idxs = query_sub_idxs.cuda()
+                # forward
+                # scores = self.gnn_model(subs, rels, subgraph_data, self.projector, mode='valid') 
+                scores = self.gnn_model(subs, rels, subgraph_data, self.projector, mode='valid', use_llm=True)  # keep on GPU
+                assert scores.shape[0] == batch_idxs.shape[0] and scores.shape[0] == query_tail_idxs.shape[0]
+                # print(query_tail_idxs.shape, scores.shape, batch_idxs.shape)
+                batch_size = batch_idxs.max().item() + 1
+
+                ranks = []
+                # local ranking calculation
+                for i in range(batch_size):
+                    subgraph_mask = (batch_idxs == i)
+                    subgraph_scores = scores[subgraph_mask]
+                    labels = query_tail_idxs[subgraph_mask]
+                    target_entities = torch.nonzero(labels)
+                    query_ranks = []
+
+                    for target_ent in target_entities:
+                        target_score = subgraph_scores[target_ent]
+                        higher_scores = subgraph_scores > target_score
+                        higher_scores = higher_scores & (~labels).bool()
+                        rank = torch.sum(higher_scores).item() + 1
+                        query_ranks.append(rank)
+
+                    ranks.extend(query_ranks)
+                    if mean_rank:
+                        mean_rank_list.extend(query_ranks)
+
+                
+
+                # Check if head is in rank 1 of scores
+                best_score = scatter_max(scores, batch_idxs, dim=0)[0]
+                head_score = scores[query_sub_idxs]
+                cnt += torch.sum((head_score >= best_score).int()).item()
+
+                
+                ranking += ranks
+
+
+            ranking = np.array(ranking)
+            ind_mrr, ind_h1, ind_h2, ind_h3, ind_h10 = cal_performance(ranking)
+            # print(f'[val]  covering tail ratio: {len(val_reach_tails_list)}, {1 - sum(val_reach_tails_list) / len(val_reach_tails_list)}')
             
+            if rank_CR:
+                target_rank = torch.Tensor(ranking).reshape(-1)
+                rank_thre = [int(i/100 * self.loader.n_ent) for i in range(1,101)]
+                rank_CR = []
+                for thre in rank_thre:
+                    ratio = torch.sum((target_rank <= thre).int()) / len(target_rank)
+                    rank_CR.append(float(ratio))
+                print('Train set:\n', rank_CR)
+                
+            # save mean rank
+            if mean_rank: self.mean_rank_dict['train'] = copy.deepcopy(mean_rank_list)
+            print(f"\nCovering head ratio in train set: {cnt}/{total} = {cnt/total}\n")
+            ind_head_ratio = cnt/total
         else:
-            t_mrr, t_h1, t_h2, t_h3, t_h10 = -1, -1, -1, -1, -1
+            ind_mrr, ind_h1, ind_h2, ind_h3, ind_h10 = -1, -1, -1, -1, -1
         # print("goodbye")
         i_time = time.time() - i_time
-        out_str = '[TRAIN] MRR:%.4f H@1:%.4f H@2:%.4f H@3:%.4f H@10:%.4f\t [VALID] MRR:%.4f H@1:%.4f H@2:%.4f H@3:%.4f H@10:%.4f\t [TEST] MRR:%.4f H@1:%.4f H@2:%.4f H@3:%.4f H@10:%.4f \t[TIME] train:%.4f inference:%.4f\n'%(tr_mrr, tr_h1, tr_h2, tr_h3, tr_h10, v_mrr, v_h1, v_h2, v_h3, v_h10, t_mrr, t_h1, t_h2, t_h3, t_h10, self.t_time, i_time)
-        return v_mrr, {'tr_mrr': tr_mrr, 'tr_h1': tr_h1, 'tr_h2': tr_h2, 'tr_h3': tr_h3, 'tr_h10': tr_h10, 'v_mrr': v_mrr, 'v_h1': v_h1, 'v_h2': v_h2, 'v_h3': v_h3, 'v_h10': v_h10, 'out_str': out_str, 'tr_head_ratio': tr_head_ratio, 'v_head_ratio': v_head_ratio}
+        out_str = '[TRAIN] MRR:%.4f H@1:%.4f H@2:%.4f H@3:%.4f H@10:%.4f\t [VALID] MRR:%.4f H@1:%.4f H@2:%.4f H@3:%.4f H@10:%.4f\t [IND] MRR:%.4f H@1:%.4f H@2:%.4f H@3:%.4f H@10:%.4f \t[TIME] train:%.4f inference:%.4f\n'%(tr_mrr, tr_h1, tr_h2, tr_h3, tr_h10, v_mrr, v_h1, v_h2, v_h3, v_h10, ind_mrr, ind_h1, ind_h2, ind_h3, ind_h10, self.t_time, i_time)
+        return v_mrr, {'tr_mrr': tr_mrr, 'tr_h1': tr_h1, 'tr_h2': tr_h2, 'tr_h3': tr_h3, 'tr_h10': tr_h10,
+                        'v_mrr': v_mrr, 'v_h1': v_h1, 'v_h2': v_h2, 'v_h3': v_h3, 'v_h10': v_h10,
+                        'ind_mrr': ind_mrr, 'ind_h1': ind_h1, 'ind_h2': ind_h2, 'ind_h3': ind_h3, 'ind_h10': ind_h10,
+                          'out_str': out_str, 'tr_head_ratio': tr_head_ratio, 'v_head_ratio': v_head_ratio}
 
 def train(trainer, args, resume_from=None):
     """Train the model with optional resume capability.
@@ -573,19 +626,55 @@ class Training_args:
     gnn_lr = 5e-4
     projector_lr = 5e-4
     temperature = 0.07
+    lamda = 0.1
     epochs = 50
     bearing = 8
     device = 'cuda:0'
 
+def construct_ind_data(train_data, val_data, print_stat=True):
+    train_rel = []
+    subgraph_train_rel = []
+    for data in train_data:
+        train_rel.extend([a[1] for a in data['drop_edges']])
+        subgraph_train_rel.extend([a[1] for a in data['subgraph']])
+        subgraph_train_rel.extend([a[1] for a in data['drop_edges']])
+    train_set = torch.unique(torch.tensor(train_rel).flatten()).tolist()
+    # subgraph_train_set = torch.unique(torch.tensor(subgraph_train_rel).flatten()).tolist()
+    ind_data=[]
+    ind_rel = []
+    val_rel = []
+    for data in val_data:
+        val_rel.extend([a[1] for a in data['drop_edges']])
+        ind_links = []
+        for edge in data['drop_edges']:
+            if edge[1] not in train_set:
+                ind_links.append(edge)
+        if len(ind_links) != 0:
+            ind_rel.extend(ind_links)
+            ind_data.append({
+                "subgraph": data['subgraph'],
+                "drop_edges": ind_links,
+            })
 
+    val_set = set(val_rel)
+    ind_set = set([a[1] for a in ind_rel])
+
+    if print_stat:
+        print("---- Data stat -----:")
+        print("- train_size:", len(train_data), "| n_unique_train_rel_size:", len(train_set), "| total_train_links:", len(train_rel))
+        print("- val_size:", len(val_data), "| n_unique_val_rel_size:", len(val_set), "| total_val_links:", len(val_rel)  )
+        print("- ind_size:", len(ind_data), "| n_unique_ind_rel_size:", len(ind_set), "| total_ind_links:", len(ind_rel)  )
+        print("Total new relations in val set: ", len(torch.unique(torch.tensor(val_rel).flatten()).tolist()))
+    return ind_data
 
 if __name__ == "__main__":
 
-    # os.environ["WANDB_MODE"] = "disabled"
+    os.environ["WANDB_MODE"] = "disabled"
 
     with open("data_for_GNN_finetune_another_way.pkl", "rb") as f:
         data = pkl.load(f)
     data = data[:int(0.1 * len(data))]
+
     os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
 
     seed = 21
@@ -608,17 +697,8 @@ if __name__ == "__main__":
     train_data = data[:train_len]
     val_data = data[train_len:]
     
-    
-    # train_rel = []
-    # for data in train_data:
-    #     train_rel.extend([a[1] for a in data['drop_edges']])
-    # train_rel = torch.unique(torch.tensor(train_rel).flatten()).tolist()
-    # val_rel = []
-    # for data in val_data:
-    #     val_rel.extend([a[1] for a in data['drop_edges']])
-    # val_rel = torch.unique(torch.tensor(val_rel).flatten()).tolist()
-    # val_rel = set(val_rel) - set(train_rel)
-    # print("Number of new relations in val set:", len(val_rel))
+    ind_data = construct_ind_data(train_data, val_data, print_stat=True)
+    # print("Total data samples with new relations in val set: ", num_data)
     # exit()
 
     # Create generator for DataLoader reproducibility
@@ -627,12 +707,14 @@ if __name__ == "__main__":
     
     train_loader = DataLoader2(train_data, mode='train')
     val_train_loader = DataLoader2(train_data, mode='val')
-    train_dataloader = DataLoader(train_loader, batch_size=32, shuffle=True, collate_fn=train_loader.collate_fn, generator=g)   
-
+    ind_val_loader = DataLoader2(ind_data, mode='val')
     val_loader = DataLoader2(val_data, mode='val')  
+
+    train_dataloader = DataLoader(train_loader, batch_size=32, shuffle=True, collate_fn=train_loader.collate_fn, generator=g)   
+    ind_val_loader = DataLoader(ind_val_loader, batch_size=32, shuffle=False, collate_fn=ind_val_loader.collate_fn)
     val_dataloader = DataLoader(val_loader, batch_size=32, shuffle=False, collate_fn=val_loader.collate_fn, )
-    
     val_train_loader = DataLoader(val_train_loader, batch_size=32, shuffle=False, collate_fn=val_train_loader.collate_fn)
+
     gnn_model = GNN_auto(GNN_config, train_loader)
     if "pretrain_model_path" in GNN_config.__dict__:
         gnn_model = loadModel(GNN_config.pretrain_model_path, gnn_model)
@@ -642,7 +724,7 @@ if __name__ == "__main__":
         projector_model = loadModel(Projector_config.pretrain_model_path, projector_model)
         print("Projector Model loaded successfully.")
     # print("GNN Model Structure:")
-    trainer = Trainer(gnn_model, projector_model, train_dataloader, val_dataloader, val_train_loader, Training_args)
+    trainer = Trainer(gnn_model, projector_model, train_dataloader, val_dataloader, val_train_loader, ind_val_loader, Training_args)
     
     # Resume from checkpoint: Uncomment to resume from the latest checkpoint
     # checkpoint_path = get_latest_checkpoint()
