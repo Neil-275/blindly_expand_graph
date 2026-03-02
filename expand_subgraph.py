@@ -1,3 +1,4 @@
+import math
 import pickle as pkl
 import random
 from dotenv import load_dotenv
@@ -116,9 +117,12 @@ class ExpandSubgraph:
                 self.start_entities.append(nums[i])
         self.edge_index = self.orignal_edge_index.copy()
         if self.GoG_simulation:
-            # print("Simulating GoG by removing edges...")
-            self.remove1hopEdges()
-            self.removeGoldRelationPath()
+            print("Simulating GoG by removing edges...")
+            if query['gold_path'] == None:
+                self.remove1hopEdges()
+                self.removeGoldRelationPath()
+            else:
+                self.removeEdges()
             self.updateEdges(self.edge_index)
         
 
@@ -133,7 +137,7 @@ class ExpandSubgraph:
 
         for i, edges in enumerate(self.edge_index):
             head, rel, tail = edges
-            adj[head].append((rel, tail))
+            adj[head].append((rel.item(), tail.item()))
         
         return adj
 
@@ -178,7 +182,8 @@ class ExpandSubgraph:
         self.k_cands = self.k_cands_org
         self._name_cache = {}
 
-    def sampleSubgraph(self, query=None):
+    
+    def sampleSubgraph(self, query=None, mode="train"):
         assert (self.query is not None or query is not None), "Please assign a query first using assign_query()"
         # print("Sampling subgraph...")
         if query is not None:
@@ -201,11 +206,34 @@ class ExpandSubgraph:
                 edges = [(head_id, rel_id, tail_id) for rel_id, tail_id in adjacency_list[head_id]]
                 triplets.extend(edges)
 
-            triplets = [triplet for triplet in triplets if 
-                        (triplet[0], triplet[1], triplet[2]) not in self.visited]
-            if triplets == []:
-                break
-            # np_triplets is an np.array
+            t_triplets = []
+            processed_triplets = set()
+
+            for h, r, t in triplets:
+                if (h, r, t) in self.visited:
+                    continue
+                
+                # Corrected Inverse Relation Logic: 
+                # If even, r+1; if odd, r-1.
+                inv_r = r + 1 if r % 2 == 0 else r - 1
+                inv_triplet = (t, inv_r, h)
+                
+                # Check if we have already added the inverse or the current one
+                if inv_triplet in processed_triplets or (h, r, t) in processed_triplets:
+                    continue
+                
+                processed_triplets.add((h, r, t))
+                t_triplets.append((h, r, t))
+
+            triplets = t_triplets
+
+            # Final Check (Using a set for O(1) lookup speed)
+            # final_set = set(triplets)
+            # for h, r, t in triplets:
+            #     inv_r = r + 1 if r % 2 == 0 else r - 1
+            #     if (t, inv_r, h) in final_set:
+            #         assert False, f"Exist inverse edges: {(h,r,t)} and {(t, inv_r, h)}"
+
             np_triplets = self.compare_rel_query_and_return_topk(
                 triplets, fuse_func=self.fuse_func)
             if len(np_triplets) == 0:
@@ -218,8 +246,8 @@ class ExpandSubgraph:
 
             for triplet in np_triplets:
                 self.visited.add((triplet[0], triplet[1], triplet[2]))
-
-                self.visited.add((triplet[2], triplet[1] + -1**(triplet[1] % 2 + 2), triplet[0]))  # Inverse relation
+                inv_r = triplet[1] + 1 if triplet[1] % 2 == 0 else triplet[1] - 1
+                self.visited.add((triplet[2], inv_r, triplet[0]))  # Inverse relation
             # print("123")
             # Check if adding these triplets would exceed the candidate limit
             if self.subgraph_key is not None:
@@ -265,6 +293,8 @@ class ExpandSubgraph:
         node_index[topk_nodes] = torch.arange(len(topk_nodes))
         
         subgraph_key = torch.tensor(self.subgraph_key, dtype=torch.long)
+        # if mode == "inference":
+        #     subgraph_key = self.to_local(subgraph_key)
         ## Return 3 tensors
         return topk_nodes, node_index, subgraph_key
 
@@ -294,8 +324,8 @@ class ExpandSubgraph:
             triplets = np.array([triplet for triplet in triplets if (triplet[0], triplet[1], triplet[2]) not in self.visited and self.id2name(triplet[2]) != "UnName_Entity"])
             for triplet in triplets:
                 self.visited.add((triplet[0], triplet[1], triplet[2]))
-
-                self.visited.add((triplet[2], triplet[1] + -1**(triplet[1] % 2 + 2), triplet[0])) 
+                inv_r = triplet[1] + 1 if triplet[1] % 2 == 0 else triplet[1] - 1
+                self.visited.add((triplet[2], inv_r, triplet[0])) 
                 subgraph_edges.append(triplet)
                 queue.put((triplet[2], depth + 1))
         
@@ -477,7 +507,7 @@ class ExpandSubgraph:
                 mask[matches[0]] = False
             
             # Find and mark inverse edge for removal
-            rel_idx = triplet[1] + (-1)**(triplet[1] % 2 + 2)
+            rel_idx = triplet[1] + 1 if triplet[1] % 2 == 0 else triplet[1] - 1
             inv_triplet = np.array([triplet[2], rel_idx, triplet[0]])
             inv_matches = np.where((self.edge_index == inv_triplet).all(axis=1))[0]
             if len(inv_matches) > 0:
@@ -499,6 +529,7 @@ class ExpandSubgraph:
         for start_entity in start_entities:
             for answer_id in answer_ids:
                 gd_doublets.append(np.array([start_entity, answer_id]))
+                gd_doublets.append(np.array([answer_id, start_entity]))  # Also consider inverse direction
         
         # Use mask-based removal to avoid index shifting
         mask = np.ones(len(self.edge_index), dtype=bool)
@@ -508,3 +539,28 @@ class ExpandSubgraph:
         
         self.edge_index = self.edge_index[mask]
             
+    def removeEdges(self):
+        # gold_path
+        mask = torch.ones(self.edge_index.shape[0],dtype=bool)
+        random.shuffle(self.query['gold_path'])
+        num_to_remove = math.ceil(len(self.query['gold_path']) * self.GoG_args['drop_ratio'])
+        
+        remove_edge = self.query['gold_path'][:num_to_remove] + self.query['1_hop_edges']
+
+        # print("Number of edges to remove:", len(remove_edge))
+
+        for edge in remove_edge:
+            edge = torch.tensor(edge)
+            dir_matches = np.where((self.edge_index == edge).all(axis=1))[0]
+            inv_rel = edge[1] + 1 if edge[1] % 2 == 0 else edge[1] - 1
+            inv_edge = torch.tensor([edge[2].item(), inv_rel.item(), edge[0].item()])
+            inv_matches = np.where((self.edge_index == inv_edge).all(axis= 1))[0]
+            # print("inv_matches:", inv_matches)
+            # print("dir_matches:", dir_matches)
+            # print("s:", (dir_matches | inv_matches).sum())
+            mask[dir_matches] = False
+            mask[inv_matches] = False
+
+        self.edge_index = self.edge_index[mask]
+
+        

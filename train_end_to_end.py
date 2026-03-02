@@ -89,7 +89,7 @@ class Trainer:
             mode='max', 
             factor=0.5, 
             patience=2, 
-            min_lr=self.args.gnn_lr / 20
+            min_lr=[self.args.gnn_lr / 20, self.args.projector_lr / 10]
         )
 
     
@@ -187,7 +187,6 @@ class Trainer:
         
         k = 0
         llm_emb = GNN_config.llm_emb.cuda()
-        train_ver = 10
         self.gnn_model.train()
         self.projector.train()
 
@@ -219,7 +218,7 @@ class Trainer:
             for i_layer in range(GNN_config.active_layer):
                 # forward
                 # random select a version for each unique relation
-                ver_idx = torch.randint(0,train_ver,(unique_rels.shape[0],)).cuda()
+                ver_idx = torch.randint(0,self.gnn_model.params.train_ver,(unique_rels.shape[0],)).cuda()
                 llm_emb_rel = llm_emb[unique_rels, ver_idx, :]
 
                 proj_emb_rel = self.projector.models[i_layer](llm_emb_rel) 
@@ -232,13 +231,12 @@ class Trainer:
                 # print("gnn_emb_rel shape:", gnn_emb_rel.shape)
                 logits = torch.matmul(proj_emb_rel, gnn_emb_rel.T) / self.temperature
                 # print("logits shape:", logits.shape)
-                layer_cont_loss = F.cross_entropy(logits, unique_rels)
+                layer_cont_loss = F.cross_entropy(logits, unique_rels, label_smoothing=0.1)
                 contrastive_loss = contrastive_loss + layer_cont_loss
                 # break
           
 
             total_loss = loss_lp + self.lamda * contrastive_loss
-            total_loss = loss_lp
             total_loss.backward()
 
             self.optimizer.step()
@@ -256,7 +254,7 @@ class Trainer:
                     "batch/lp_loss": loss_lp.item(),
                     "batch/contrastive_loss": contrastive_loss.item(),
                     "batch/gnn_lr": self.optimizer.param_groups[0]['lr'],
-                    "batch/proj_lr": self.optimizer.param_groups[0]['lr']
+                    "batch/proj_lr": self.optimizer.param_groups[1]['lr']
                 })
         self.t_time += time.time() - t_time
         
@@ -367,6 +365,7 @@ class Trainer:
             if mean_rank: self.mean_rank_dict['train'] = copy.deepcopy(mean_rank_list)
             print(f"\nCovering head ratio in train set: {cnt}/{total} = {cnt/total}\n")
             tr_head_ratio = cnt/total
+            return
         else:
             tr_mrr, tr_h1, tr_h2, tr_h3, tr_h10 = -1, -1, -1, -1, -1
         
@@ -569,7 +568,7 @@ def train(trainer, args, resume_from=None):
     for epoch in range(start_epoch, args.epochs):
         mrr, metrics, out_str = trainer.train_batch(epoch)
             
-        if mrr > best_mrr:
+        if mrr > best_mrr + 0.001:  # significant improvement
             best_mrr = mrr
             best_str = out_str
             print(f"Epoch {epoch} | New Best Var MRR: {metrics['v_mrr']:.4f} | Train MRR: {metrics['tr_mrr']:.4f}")
@@ -601,6 +600,7 @@ class GNN_config:
     dropout = 0.3
     n_ent = 1024 # subgraph size
     n_rel = 237
+    train_ver = 10
     shortcut = True
     readout = 'linear'
     concatHidden = True
@@ -611,7 +611,7 @@ class GNN_config:
         llm_description_aligned_emb = pkl.load(f)
     llm_emb = list(llm_description_aligned_emb.values())
     llm_emb = torch.stack(llm_emb, dim=0)
-    # pretrain_model_path = "topk_0.1_layer_8_ValMRR_0.437.pt"
+    # pretrain_model_path = "weights/finetune/avid-forest-122.pt"
     del(llm_description_aligned_emb)
 
 class Projector_config:
@@ -626,7 +626,7 @@ class Training_args:
     gnn_lr = 5e-4
     projector_lr = 5e-4
     temperature = 0.07
-    lamda = 0.1
+    lamda = 1.0
     epochs = 50
     bearing = 8
     device = 'cuda:0'
@@ -636,18 +636,20 @@ def construct_ind_data(train_data, val_data, print_stat=True):
     subgraph_train_rel = []
     for data in train_data:
         train_rel.extend([a[1] for a in data['drop_edges']])
-        subgraph_train_rel.extend([a[1] for a in data['subgraph']])
+        subgraph_train_rel.extend([a[1].item() for a in data['subgraph'][2]])
         subgraph_train_rel.extend([a[1] for a in data['drop_edges']])
     train_set = torch.unique(torch.tensor(train_rel).flatten()).tolist()
-    # subgraph_train_set = torch.unique(torch.tensor(subgraph_train_rel).flatten()).tolist()
+    subgraph_train_set = torch.unique(torch.tensor(subgraph_train_rel).flatten()).tolist()
+
     ind_data=[]
     ind_rel = []
     val_rel = []
+
     for data in val_data:
         val_rel.extend([a[1] for a in data['drop_edges']])
         ind_links = []
         for edge in data['drop_edges']:
-            if edge[1] not in train_set:
+            if edge[1] not in subgraph_train_set:
                 ind_links.append(edge)
         if len(ind_links) != 0:
             ind_rel.extend(ind_links)
@@ -664,7 +666,8 @@ def construct_ind_data(train_data, val_data, print_stat=True):
         print("- train_size:", len(train_data), "| n_unique_train_rel_size:", len(train_set), "| total_train_links:", len(train_rel))
         print("- val_size:", len(val_data), "| n_unique_val_rel_size:", len(val_set), "| total_val_links:", len(val_rel)  )
         print("- ind_size:", len(ind_data), "| n_unique_ind_rel_size:", len(ind_set), "| total_ind_links:", len(ind_rel)  )
-        print("Total new relations in val set: ", len(torch.unique(torch.tensor(val_rel).flatten()).tolist()))
+        # print("Total new relations in val set: ", len(torch.unique(torch.tensor(val_rel).flatten()).tolist()))
+    # exit()
     return ind_data
 
 if __name__ == "__main__":
@@ -673,7 +676,10 @@ if __name__ == "__main__":
 
     with open("data_for_GNN_finetune_another_way.pkl", "rb") as f:
         data = pkl.load(f)
-    data = data[:int(0.1 * len(data))]
+    random.seed(96)
+    random.shuffle(data)
+    data = data[:int(0.55 * len(data))]
+
 
     os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
 
@@ -693,7 +699,7 @@ if __name__ == "__main__":
         np.random.seed(worker_seed)
         random.seed(worker_seed)
 
-    train_len = int(len(data) * 0.8)
+    train_len = int(len(data) * 0.6)
     train_data = data[:train_len]
     val_data = data[train_len:]
     

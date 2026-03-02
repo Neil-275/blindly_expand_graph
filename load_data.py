@@ -44,6 +44,8 @@ class DataLoader(Dataset):
         random.shuffle(self.all_train_triples)
         fact_triple = self.all_train_triples[:fact_len]
         train_triple = self.all_train_triples[fact_len:]
+        if train_triple == []:
+            train_triple = torch.empty((0, 3), dtype=torch.int32)
 
         valid_triple = self.read_triples('valid.txt')
         test_triple  = self.read_triples('test.txt')
@@ -52,7 +54,8 @@ class DataLoader(Dataset):
 
         self.train_graph  = self.double_triple(fact_triple)
         self.train_query = train_triple
-    
+
+        print(len(fact_triple), len(train_triple))
         self.val_graph = self.double_triple(np.concatenate([fact_triple, train_triple], 0).tolist())
         self.valid_query = valid_triple
 
@@ -203,6 +206,8 @@ class DataLoader(Dataset):
         
         fact_data = np.array(self.double_triple(all_triple[:fact_ratio].tolist()))
         train_data = np.array(self.double_triple(all_triple[fact_ratio:].tolist()))
+        if train_data.shape[0] == 0:
+            train_data = np.empty((0, 3), dtype=np.int32)
         
         if self.args.remove_1hop_edges:
             print('==> removing 1-hop links...')

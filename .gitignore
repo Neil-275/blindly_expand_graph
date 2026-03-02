@@ -12,3 +12,15 @@ reasoning_module.py
 create_queries.py
 data/
 weights/
+train_align/
+train_cl/
+saveModels/
+data_for_CL/
+for_getting_emb/
+results/
+wandb/
+paraphrasing.ipynb
+*.pkl
+*.zip
+*.pt
+ttt.py

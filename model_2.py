@@ -16,12 +16,13 @@ class Projector(torch.nn.Module):
             current_dim = in_dim
             layers = []    
             for h_dim in hidden_dims:
-                # layers.append(nn.LayerNorm(current_dim))
+                layers.append(nn.LayerNorm(current_dim))
                 layers.append(nn.Linear(current_dim, h_dim))
                 # print(layers[-1].weight.shape)
                 layers.append(nn.GELU())
                 layers.append(nn.Dropout(dropout))
                 current_dim = h_dim 
+
             
             layers.append(nn.Linear(current_dim, out_dim))
             model = nn.Sequential(*layers)
@@ -46,7 +47,7 @@ class GNNLayer(torch.nn.Module):
         self.w_alpha  = nn.Linear(attn_dim, 1)
         self.W_h = nn.Linear(in_dim, out_dim, bias=False)
     
-    def forward(self, q_sub, q_rel, r_idx, hidden, edges, n_node,gnn_emb_rel=None, mapping = None, shortcut=False):
+    def forward(self, q_sub, q_rel, r_idx, hidden, edges, n_node, gnn_emb_rel=None, mapping=None, shortcut=False):
         # edges: [h, r, t]
         sub = edges[:,0]
         rel = edges[:,1]
@@ -55,10 +56,18 @@ class GNNLayer(torch.nn.Module):
 
         if gnn_emb_rel is not None:
             hr = gnn_emb_rel[mapping[rel]]
-            h_qr = gnn_emb_rel[mapping[q_rel]][r_idx]
-        else:
+            # Check if q_rel is already an embedding (tensor with >1 dimension) or an ID
+            if len(q_rel.shape) > 1:  # q_rel is already an embedding
+                h_qr = q_rel.squeeze(0) if q_rel.dim() > 1 else q_rel  # handle batch dimension
+            else:  # q_rel is an ID, lookup embedding
+                h_qr = gnn_emb_rel[mapping[q_rel]][r_idx if r_idx is not None else 0]
+        else: # not using llm_emb, use original relation embedding
             hr = self.rela_embed(rel) # relation embedding of each edge
-            h_qr = self.rela_embed(q_rel)[r_idx] # use batch_idx to get the query relation
+            # Check if q_rel is already an embedding or an ID
+            if len(q_rel.shape) > 1:  # q_rel is already an embedding
+                h_qr = q_rel.squeeze(0) if q_rel.dim() > 1 else q_rel  # handle batch dimension
+            else:  # q_rel is an ID, lookup embedding
+                h_qr = self.rela_embed(q_rel)[r_idx if r_idx is not None else 0] # use batch_idx to get the query relation
         
         # message aggregation
         message = hs * hr
@@ -74,22 +83,26 @@ class GNNLayer(torch.nn.Module):
         return hidden_new
 
 class GNN_auto(torch.nn.Module):
-    def __init__(self, params, loader):
+    def __init__(self, params, loader, mode="train"):
         super(GNN_auto, self).__init__()
         self.params = params
         self.n_layer = params.n_layer
         self.hidden_dim = params.hidden_dim
         self.attn_dim = params.attn_dim
         self.loader = loader
-        self.llm_emb = params.llm_emb
+        if hasattr(params, 'llm_emb'):
+            self.llm_emb = params.llm_emb
         self.n_ent = params.n_ent
         self.n_rel = params.n_rel
         act = nn.ReLU()
         self.active_layers = getattr(params, 'active_layer', self.n_layer) 
         # self.query_rela_embed = nn.Embedding(2*237+1, self.hidden_dim)
+       
+
         if self.params.initializer == 'relation': 
             self.query_rela_embed = nn.Embedding(2*self.n_rel, self.hidden_dim)
         
+
         self.gnn_layers = []
         for i in range(self.n_layer):
             self.gnn_layers.append(GNNLayer(self.hidden_dim, self.hidden_dim, self.attn_dim, act=act))
@@ -105,19 +118,9 @@ class GNN_auto(torch.nn.Module):
                 self.W_final = nn.Linear(self.hidden_dim, 1, bias=False)
         
 
-    # def _setup_readout(self):
-    #     """Sets up the final linear layer based on active_layers."""
-    #     self.concatHidden = False # Warning: This line overrides any previous setting for concatHidden.
-    #     if self.params.readout == 'linear':
-    #         if self.params.concatHidden:
-    #             # (active_layers + 1) because we include the initial hidden state (h0)
-    #             input_dim = self.hidden_dim * (self.active_layers + 1)
-    #             self.W_final = nn.Linear(input_dim, 1, bias=False)
-    #         else:
-    #             self.W_final = nn.Linear(self.hidden_dim, 1, bias=False)
-    #     # to cuda
-    #     self.W_final = self.W_final.cuda()
-
+    def assign_rel_emb(self, embeddings):
+        self.llm_emb = embeddings
+        self.llm_emb = self.llm_emb.to(torch.device("cuda:0"))
 
     def forward(self, q_sub, q_rel, subgraph_data, projectors, mode='train', use_llm = False, return_hidden=False):
         ''' forward with extra propagation '''
@@ -136,7 +139,10 @@ class GNN_auto(torch.nn.Module):
             hidden[query_sub_idxs, :] = 1
         elif self.params.initializer == 'relation':
             if use_llm:
-                q_ver = torch.randint(0,20,(1,)).item()
+                if mode == "train":
+                    q_ver = torch.randint(0,self.params.train_ver,(1,)).item()
+                else:
+                    q_ver = torch.randint(self.params.train_ver,self.llm_emb.shape[1],(1,)).item()
                 hidden[query_sub_idxs, :] = projectors.models[self.active_layers](self.llm_emb[q_rel, q_ver])
             else:
                 hidden[query_sub_idxs, :] = self.query_rela_embed(q_rel)
@@ -152,11 +158,14 @@ class GNN_auto(torch.nn.Module):
         for i, r in enumerate(unique_rels):
             mapping[all_rels == r] = i
         # propagation
-        for i in range(self.n_layer):
+        for i in range(self.n_layer): # fix later
             # forward
             if use_llm:
-                ver_idx = torch.randint(0,20,(unique_rels.shape[0],)).cuda()
-                llm_emb_rel = self.llm_emb[unique_rels, ver_idx, :]
+                if mode == "train":
+                    q_ver = torch.randint(0,self.params.train_ver,(1,)).cuda()
+                else:
+                    q_ver = torch.randint(self.params.train_ver,self.llm_emb.shape[1],(1,)).cuda()
+                llm_emb_rel = self.llm_emb[unique_rels, q_ver, :]
 
                 gnn_emb_rel = projectors.models[i](llm_emb_rel)
                 # gnn_emb_rel_mapped = gnn_emb_rel[mapping.long()]
@@ -189,14 +198,65 @@ class GNN_auto(torch.nn.Module):
         # scores = scores.cpu()
         return scores   
     
-    def get_node_embeddings(self, q_sub, q_rel, subgraph_data):
-        with torch.no_grad():
-            _, hidden_all = self.forward(q_sub, q_rel, subgraph_data, projectors=None, return_hidden=True)
+    def forward_inference(self, q_sub, query_relation_emb, subgraph_data, projectors):
+        n = len(q_sub) # number of queries in the batch (should be 1 for inference)
+        batch_idxs, abs_idxs, query_sub_idxs, edge_batch_idxs, batch_sampled_edges = subgraph_data
+        n_node = len(batch_idxs)
+
+        h0 = torch.zeros((1, n_node, self.hidden_dim)).cuda()
+        hidden = torch.zeros(n_node, self.hidden_dim).cuda()
+
+        # print(hidden[query_sub_idxs,:].shape, query_relation_emb.shape)
+        hidden[query_sub_idxs, :] = projectors.models[self.active_layers](query_relation_emb)
+
+        if self.params.concatHidden: hidden_list = [hidden]
+
+        # Create relation mapping for subgraph edges only (no query relation ID available)
+        all_rels = batch_sampled_edges[:,1]
+        unique_rels = torch.unique(all_rels)
+        mapping = torch.zeros(all_rels.shape[0], dtype=torch.long).cuda()
+        ### mapping from edge to relation index in unique_rels
+        for i, r in enumerate(unique_rels):
+            mapping[all_rels == r] = i
         
-        batch_idxs, abs_idxs, _, _, _ = subgraph_data
-        return hidden_all, batch_idxs, abs_idxs
-    
-    # def get_score(self, q_sub, q_rel, subgraph_data):
-    #     with torch.no_grad():
-    #         scores_all = self.forward(q_sub, q_rel, subgraph_data)
-    #     return scores_all
+        # propagation through layers
+        for i in range(self.n_layer):
+            # For inference, we can use a fixed version or the last version of LLM embeddings
+            if hasattr(self, 'llm_emb') and self.llm_emb is not None:
+                llm_emb_rel = self.llm_emb[unique_rels, :]
+                # print(llm_emb_rel.shape, llm_emb_rel.device, next(projectors.models[i].parameters()).device)
+                gnn_emb_rel = projectors.models[i](llm_emb_rel)
+                gnn_query_rel_emb = projectors.models[i](query_relation_emb)
+                # Modified GNNLayer call for inference - pass query_relation_emb directly
+                hidden = self.gnn_layers[i](q_sub, gnn_query_rel_emb, None, hidden, batch_sampled_edges, n_node,
+                                            gnn_emb_rel,
+                                            mapping,
+                                            shortcut=self.params.shortcut)
+            else:
+                # Use standard relation embeddings - pass query_relation_emb directly
+                hidden = self.gnn_layers[i](q_sub, query_relation_emb, None, hidden, batch_sampled_edges, n_node,
+                                        shortcut=self.params.shortcut)
+            
+            # activation signal and GRU processing (same as main forward)
+            act_signal = (hidden.sum(-1) == 0).detach().int()
+            hidden = self.dropout(hidden)
+            hidden, h0 = self.gate(hidden.unsqueeze(0), h0)
+            hidden = hidden.squeeze(0)
+            hidden = hidden * (1-act_signal).unsqueeze(-1)
+            h0 = h0 * (1-act_signal).unsqueeze(-1).unsqueeze(0)
+            
+            if self.params.concatHidden: hidden_list.append(hidden)
+
+        # readout (same as main forward)
+        if self.params.readout == 'linear':
+            if self.params.concatHidden: hidden = torch.cat(hidden_list, dim=-1)
+            # print("Hidden shape before readout:", hidden.shape)
+            # dummy return
+            # logits =  torch.randn(hidden.shape[0]).cuda()
+            # return logits
+            scores = self.W_final(hidden).squeeze(-1)        
+        elif self.params.readout == 'multiply':
+            if self.params.concatHidden: hidden = torch.cat(hidden_list, dim=-1)
+            scores = torch.sum(hidden * hidden[query_sub_idxs][batch_idxs], dim=-1)
+        
+        return scores

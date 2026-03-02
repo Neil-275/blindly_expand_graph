@@ -10,6 +10,11 @@ import torch
 
 client = openai.OpenAI()
 
+llama_client = openai.OpenAI(
+    base_url="http://178.226.13.28:42179/v1",
+    api_key="74031a5c5f80402a5bbe8d3257b3a15bdb44519b530d50bddd4f49b37e9d0eed",
+)
+
 def extract_numbers(t):
     """Recursively extract all numbers from nested tuples into a flat list."""
     numbers = []
@@ -77,16 +82,25 @@ def run_llm(prompt, system_prompt="You are a helpful assistant.", max_tokens=500
                 # continue
                 break
             else:
-                response = openai.chat.completions.create(
-                    model=engine,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    frequency_penalty=0,
-                    presence_penalty=0,
-                    
-                )
-                result = response.choices[0].message.content
+                if engine.startswith("gpt"):
+                    response = openai.chat.completions.create(
+                        model=engine,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        frequency_penalty=0,
+                        presence_penalty=0,
+                        
+                    )
+                    result = response.choices[0].message.content
+                elif engine.startswith("meta-llama/Llama"):
+                    response = llama_client.chat.completions.create(
+                        model=engine,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                    result = response.choices[0].message.content
             # break
             time.sleep(1)
             
@@ -97,6 +111,57 @@ def run_llm(prompt, system_prompt="You are a helpful assistant.", max_tokens=500
     
     # print("_______end openai")
     return result
+
+
+def get_last_token_embedding(
+    text: str,
+    model: str = "meta-llama/Llama-3.1-8B-Instruct",
+) -> torch.Tensor:
+    """Return the last-token embedding of *text* from the remote Llama model.
+
+    The /v1/embeddings endpoint of a decoder model returns the hidden state at
+    the final (last) token position, which acts as a summary representation of
+    the full input sequence.
+
+    Returns a 1-D float32 numpy array of shape (hidden_dim,).
+    """
+    #dummy code:
+    return torch.randn(4096)
+
+    # while True:
+    #     try:
+    #         response = llama_client.embeddings.create(model=model, input=text)
+    #         return torch.tensor(response.data[0].embedding, dtype=torch.float32)
+    #     except Exception as e:
+    #         print(f"embedding error, retry: {e}")
+    #         time.sleep(2)
+
+
+def get_subgraph_relation_embeddings(
+    subgraph_edges: torch.Tensor,
+    model: str = "meta-llama/Llama-3.1-8B-Instruct",
+) -> dict:
+    """Extract all unique relations from a subgraph and return their embeddings.
+
+    Args:
+        subgraph_edges: LongTensor of shape (E, 3) where column 1 is relation ID.
+        model:          Llama model identifier served at the remote endpoint.
+
+    Returns:
+        dict mapping relation_id (int) -> np.ndarray embedding (float32, 1-D).
+    """
+    from data_utils import id2rel
+
+    unique_rel_ids = torch.unique(subgraph_edges[:, 1]).tolist()
+
+    embeddings = {}
+    for rel_id in unique_rel_ids:
+        rel_name = id2rel.get(rel_id)
+        if rel_name is None:
+            continue
+        embeddings[rel_id] = get_last_token_embedding(rel_name, model=model)
+
+    return embeddings
 
 
 
@@ -237,3 +302,41 @@ def fuse_rrf(scores, k=5):
         dict_scores[key] = sum([1/(k + rank) for rank in dict_scores[key]])
     scores = torch.tensor([list(dict_scores.values())])
     return scores
+
+def getBatchSubgraph(subgraph_list: list):  
+        # print("Getting batch subgraph...")
+        batchsize = len(subgraph_list)
+        ent_delta_values = [0]
+        batch_sampled_edges = []
+        batch_idxs, abs_idxs = [], []
+        query_sub_idxs = []
+        edge_batch_idxs = []
+
+        for batch_idx in range(batchsize):       
+            sub, topk_nodes, node_index, sampled_edges = subgraph_list[batch_idx]
+            num_nodes = len(topk_nodes)
+            ent_delta = sum(ent_delta_values) # tính offset.
+
+            # Adding ent_delta to make node indices unique in the batch
+            sampled_edges[:,0] = node_index[sampled_edges[:,0]] + ent_delta
+            sampled_edges[:,2] = node_index[sampled_edges[:,2]] + ent_delta
+            batch_sampled_edges.append(sampled_edges)
+            edge_batch_idxs += [batch_idx] * int(sampled_edges.shape[0])
+
+            ent_delta_values.append(num_nodes)
+            batch_idxs += [batch_idx] * num_nodes
+            abs_idxs += topk_nodes.tolist()
+            query_sub_idxs.append(int(node_index[sub]) + ent_delta)
+        
+        # [n_batch_ent]
+        batch_idxs = torch.LongTensor(batch_idxs)
+        # [n_batch_ent]
+        abs_idxs = torch.LongTensor(abs_idxs)
+        # [n_batch_edges, 3]
+        batch_sampled_edges = torch.cat(batch_sampled_edges, dim=0)
+        # [n_batch_edges]
+        edge_batch_idxs = torch.LongTensor(edge_batch_idxs)
+        # [n_batch]
+        query_sub_idxs = torch.LongTensor(query_sub_idxs)    
+        
+        return batch_idxs, abs_idxs, query_sub_idxs, edge_batch_idxs, batch_sampled_edges
