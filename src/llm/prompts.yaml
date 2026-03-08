@@ -1,0 +1,89 @@
+check_answer_reached:
+  system: |
+    You are provided with a question and a sub knowledge graph (a set of triples in the format of "head relation tail"). They are included in the format below:
+      Question: {question}
+      Sub knowledge graph:
+        {sub_knowledge_graph}
+
+    Your mission is to determine whether the answer(s) of the question can be found from the given sub knowledge graph.
+
+    Some critical rules to determine the answer:
+      1. The answer(s) must be entity/entities in the sub knowledge graph.
+      2. The answer(s) must be directly supported by the triples in the sub knowledge graph. You should not infer any new fact that is not explicitly stated in the sub knowledge graph.
+      3. If the question is ambiguous and can have multiple answers, you should list all the possible answers that can be directly supported by the sub knowledge graph. If the question is ambiguous but
+    
+    Please respond in the JSON format followed the instructions below:
+      {
+        "reached": true/false,
+        "answers": ["answer1", "answer2", ...]  # This field is optional. You only need to provide this field when "reached" is true. otherswise, you can leave this field null.
+        "explanation": "Your explanation of why the answer(s) can or cannot be found in the sub knowledge graph."  # This field is optional. You can provide this field to explain your reasoning
+      }
+
+    Here are some examples:
+    Example 1:
+      Question: Which education institution has a sports team named George Washington Colonials men's basketball?
+      Sub knowledge graph:
+        George Washington University  education.educational_institution.sports_teams  George Washington Colonials men's basketball
+        George Washington Colonials men's basketball  sports.school_sports_team.school  George Washington University
+        George Washington Colonials  education.athletics_brand.teams George Washington Colonials men's basketball
+        George Washington Colonials men's basketball  sports.school_sports_team.athletics_brand  George Washington Colonials
+
+      Your response: 
+        {
+          "reached": true,
+          "answers": ["George Washington University"],
+          "explanation": "The sub knowledge graph contains multiple triples that directly support the fact that George Washington University has a sports team named George Washington Colonials"
+        }
+
+    Example 2:
+      Question: Who dated with Demi Lovato?
+      Sub knowledge graph:
+        Demi Lovato  base.popstra.celebrity.dated  m.064cvl8
+        Demi Lovato  people.person.gender  Female
+        Demi Lovato  people.person.profession  Musician
+        Demi Lovato  base.popstra.celebrity.dated  m.065py_5
+
+      Your response:
+        {
+          "reached": false,
+          "answers": null,
+          "explanation": "The sub knowledge graph does not provide specific information about who dated with Demi Lovato."
+        }
+
+  user: |
+    Question: {question}
+    Sub knowledge graph:
+      {sub_knowledge_graph}
+
+find_path: 
+  system: |
+    You are given a question, an entity, and a trace of the reasoning path that has been taken to reach the current entity, a selection limit on how many relations to select for expansion, and a list of candidate relations that can be followed from the current entity.
+    
+    Here is your tasks:
+      1. **Identify the Reasoning Gap:** Determine what piece of information is required next to move closer to the answer.
+      2. **Select Existing Relations:** From the 'Available 1-hop relations', identify which relations are semantically relevant to the next logical step.
+      3. **Hypothesize Missing Relations:** If the necessary relation is absent from the current context, describe it in natural language (e.g., "the founder of this organization").
+      4. **Natural Language Requirement:** All relation descriptions must be in natural language, not IDs.
+
+    Input format:
+      Question: {question}
+      Current entity: {current_entity}
+      Active reasoning path: {reasoning_path_trace}
+      Available 1-hop relations: {available_relations}
+      Selection limit: {selection_limit}
+
+    Please respond in JSON format as follows:
+      {
+        "strategic_reasoning": "A brief explanation of the logical step we are taking.",
+        "contributory_relations": {
+          "existing": ["List of pair ID and its correspond NL description of relevant relations found in the context"],
+          "missing": ["List of NL descriptions for logically required relations not present in the context"]
+        }
+      }
+
+  user: |
+    Question: {question}
+    Current entity: {current_entity}
+    Active reasoning path: {reasoning_path_trace}
+    Available 1-hop relations: {available_relations}
+    Selection limit: {selection_limit}
