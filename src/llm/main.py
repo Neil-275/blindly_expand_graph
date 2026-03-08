@@ -56,8 +56,8 @@ class LLMInterface:
             )
 
             # This implements a simple retry when LLM did not response in the correct format
+            retry = 0
             while True:
-                retry: int = 0
                 try:
                     llm_response = self.llm_instance.run(
                         system_prompt=system_prompt,
@@ -78,8 +78,9 @@ class LLMInterface:
     def find_suitable_path(
         self,
         question: str,
-        entity_id: str,
-        trace: list[tuple[str, str, str]],
+        current_entity: str,
+        formatted_trace: str,
+        available_1hop_relations: list[str],
         k: int = 3
     ):
         pass
