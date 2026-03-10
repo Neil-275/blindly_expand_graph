@@ -1,4 +1,5 @@
 from src.utils import fuse_mean, fuse_rrf, get_top_k, extract_numbers, extract_strings
+from src.models import QueryEntry
 from src.modules.shared import SENTENCE_TRANSFORMER_MODEL
 from src.kb_interface.freebase import freebase_interface
 
@@ -53,9 +54,9 @@ class SubgraphSampler:
             for idx, rel_id in enumerate(edge_index[:, 1])
         }
 
-        self.adj = self.build_adjacency_list(self.edge_index)
+        self.adj: dict[str, list[tuple[str, str]]] = self.build_adjacency_list(self.edge_index)
 
-        self.query: dict = None
+        self.query: QueryEntry
         self.fuse_func = fuse_func
         self.subgraph_key = None
         self.answers_id = None
@@ -68,7 +69,7 @@ class SubgraphSampler:
         self.use_sub_objectives_b = use_sub_objectives_b
         self.sub_objectives = None
 
-        self.query: dict = None
+        # self.query: dict = None
         self.query_emb: torch.Tensor = None
         self.start_entities: list[str] = None
 
@@ -196,5 +197,38 @@ class SubgraphSampler:
 
         # Extract the start entities from the query
 
-
         pass
+
+    def sample_subgraph(self, query: QueryEntry, mode: str = "train"):
+        # TODO: Continue implementing later
+        pass
+        if not self.query and not query:
+            logger.warning("No query assigned to subgraph sampler. Cannot sample subgraph.")
+            raise ValueError("Query must be assigned before sampling subgraph.")
+
+        if query:
+            self.assign_query(query)
+
+        start_entities: list[str] = list(set(self.query.start_entities))
+
+        while len(start_entities) > 0:
+            triples: list[tuple[str, str, str]] = []
+
+            # Create a copy to avoid modifying list during iteration
+            _start_entities = start_entities.copy()
+            for head_id in _start_entities:
+                if head_id not in self.adj.values():
+                    _start_entities.remove(head_id)
+                    continue
+
+                edges = [
+                    (head_id, rel_id, tail_id)
+                    for rel_id, tail_id in self.adj[head_id]
+                ]
+                triples.extend(edges)
+
+            t_triplets = []
+            processed_triplets = set()
+
+            for head, relation, tail in triples:
+                pass

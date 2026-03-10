@@ -3,6 +3,7 @@ from src.modules.expand_subgraph import SubgraphSampler
 from src.models import QueryEntry, ReasoningPath
 from src.llm.main import LLMInterface
 
+from collections import defaultdict
 from typing import Optional
 from loguru import logger
 
@@ -28,8 +29,13 @@ class ReasoningModule:
         self.max_hops = max_hops
 
         # Cache for knowledge retrieval to avoid redundant calls
+        self._subgraph = None
+        self._ajacency_cache = defaultdict(list)  # Cache for adjacency list of entities
         self._mid2name_cache = {}
         self._id2rel_cache = {}
+
+        # One-use variables for the current query
+        self._query: QueryEntry
 
         # Check parameters
         if not self.llm_interface:
@@ -48,6 +54,10 @@ class ReasoningModule:
         return name
 
     def _trace_to_string(self, trace: list[tuple[str, str, str]]):
+        """
+        This function converts a trace of (head, relation, tail) triples
+        into a ready-in-use part of the prompt.
+        """
         return "\n".join(
             f"{self._id_to_name(head)} "
             f"{relation} "
@@ -55,6 +65,17 @@ class ReasoningModule:
 
             for head, relation, tail in trace
         )
+
+    def _build_adjacency_cache(self, entity_id: str):
+        """
+        This function builds the adjacency cache for a given entity by querying the Freebase interface.
+        It retrieves all 1-hop neighbors (relations and tail entities) of the given entity and stores them in the cache.
+        """
+        if entity_id in self.ajacency_cache:
+            return
+
+        neighbors = freebase_interface.get_1hop_triples(entity_id)
+        self._ajacency_cache[entity_id] = neighbors
 
     def reset(self):
         """
@@ -65,8 +86,9 @@ class ReasoningModule:
         pass
 
     def assign_query(self, query: QueryEntry):
-        self.query = query
+        self._query = query
         self.subgraph_sampler.assign_query(query.model_dump())
+        self._subgraph = self.subgraph_sampler.sample_subgraph()
         pass
 
     def reasoning(self):
@@ -113,4 +135,5 @@ class ReasoningModule:
 
                 # Step 2. If not reached, expand the current path with smapler and LLM support
                 # Step 2a. PATHFINDER: Which relations should we follow from here?
+                
         return answers
