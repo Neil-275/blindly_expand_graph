@@ -13,7 +13,7 @@ from utils import (
 from prompt_list2 import decision_prompt, entities_pruning_prompt, GoG_answer_prompt
 from extract_llm_answers import extract_decision_json, extract_pruned_entities
 from utils_for_reasoning import map_to_most_similar, map_to_most_similar_list
-from data_utils import id2ent, ent2name, id2rel, rel2id
+# from data_utils import id2ent, ent2name, id2rel, rel2id
 import sys
 from freebase_interface import freebase_interface
 from expand_subgraph_freebase import ExpandSubgraphFreebase
@@ -278,7 +278,8 @@ class ReasoningModuleFreebase:
 
         prompt = decision_prompt
         prompt = prompt.replace("{{question}}", q)
-        prompt = prompt.replace("{{current_entity}}", ent2name[id2ent[entity_id]])
+        # prompt = prompt.replace("{{current_entity}}", ent2name[id2ent[entity_id]])
+        prompt = prompt.replace("{{current_entity}}", self.entIndex2name[entity_id])
         prompt = prompt.replace("{{reasoning_history}}", history_str)
         prompt = prompt.replace("{{context}}", "\n".join(local_relations))
         prompt = prompt.replace("{{k}}", str(k))
@@ -367,12 +368,12 @@ class ReasoningModuleFreebase:
 
         q = question[0] if isinstance(question, list) else question
         pool_str = "; ".join(
-            f"{ent2name[id2ent[c['entity']]]}"
+            f"{self.entIndex2name[c['entity']]}"
             for c in candidate_pool
         )
         prompt = entities_pruning_prompt
         prompt = prompt.replace("{{question}}", q)
-        prompt = prompt.replace("{{current_entity}}", ent2name[id2ent[cur_ent]])
+        prompt = prompt.replace("{{current_entity}}", self.entIndex2name[cur_ent])
         prompt = prompt.replace("{{current_relation}}", rel_nl)
         prompt = prompt.replace("{{candidate_pool}}", pool_str)
         prompt = prompt.replace("{{k}}", str(k))
@@ -389,7 +390,7 @@ class ReasoningModuleFreebase:
         # Map returned names back to candidate dicts (best score per name)
         name_to_cand = {}
         for c in candidate_pool:
-            name = ent2name[id2ent[c["entity"]]]
+            name = self.entIndex2name[c["entity"]]
             if name not in name_to_cand or c["score"] > name_to_cand[name]["score"]:
                 name_to_cand[name] = c
 
