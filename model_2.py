@@ -83,13 +83,13 @@ class GNNLayer(torch.nn.Module):
         return hidden_new
 
 class GNN_auto(torch.nn.Module):
-    def __init__(self, params, loader, mode="train"):
+    def __init__(self, params, mode="train"):
         super(GNN_auto, self).__init__()
         self.params = params
         self.n_layer = params.n_layer
         self.hidden_dim = params.hidden_dim
         self.attn_dim = params.attn_dim
-        self.loader = loader
+        # self.loader = loader
         if hasattr(params, 'llm_emb'):
             self.llm_emb = params.llm_emb
         self.n_ent = params.n_ent

@@ -18,4 +18,4 @@ with open("knowledge_graph/KG_data/FB15k-237-betae/FB15k_mid2name.txt", "r", enc
         
 
 name2ent = {v:k for k,v in ent2name.items()}  
-rel2id = {v:k for k,v in id2rel.items()} 
+rel2id = {v:k for k,v in id2rel.items()}

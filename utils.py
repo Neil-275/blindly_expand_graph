@@ -35,6 +35,7 @@ def extract_strings(t):
             strings.extend(extract_strings(item))
     return strings
 
+
 def extract_notations(t):
     """Recursively extract all notations (entities and relations) from nested tuples into a flat list."""
     notations = []
@@ -44,6 +45,7 @@ def extract_notations(t):
             notations.append(c)
     return notations
 
+
 def extract_answer(text):
     start_index = text.find("{")
     end_index = text.find("}")
@@ -51,6 +53,18 @@ def extract_answer(text):
         return text[start_index+1:end_index].strip()
     else:
         return ""
+
+
+def flatten_nested_tuple(input: tuple) -> list:
+    """Recursively flatten a nested tuple into a flat list."""
+    flat_list = []
+    if isinstance(input, (tuple, list)):
+        for item in input:
+            flat_list.extend(flatten_nested_tuple(item))
+    else:
+        flat_list.append(input)
+    return flat_list
+
 
 class SubobjectiveOutput(BaseModel):
     res: list[str]
@@ -139,8 +153,9 @@ def get_last_token_embedding(
 
 def get_subgraph_relation_embeddings(
     subgraph_edges: torch.Tensor,
+    relation_description_dict: dict[int, str],
     model: str = "meta-llama/Llama-3.1-8B-Instruct",
-) -> dict:
+) -> dict[int, torch.Tensor]:
     """Extract all unique relations from a subgraph and return their embeddings.
 
     Args:
@@ -150,19 +165,19 @@ def get_subgraph_relation_embeddings(
     Returns:
         dict mapping relation_id (int) -> np.ndarray embedding (float32, 1-D).
     """
-    from data_utils import id2rel
+    # from data_utils import id2rel
+    # DONE, hope so
 
     unique_rel_ids = torch.unique(subgraph_edges[:, 1]).tolist()
 
     embeddings = {}
     for rel_id in unique_rel_ids:
-        rel_name = id2rel.get(rel_id)
-        if rel_name is None:
+        # rel_name = id2rel.get(rel_id)
+        relation_description = relation_description_dict.get(rel_id, None)
+        if relation_description is None:
             continue
-        embeddings[rel_id] = get_last_token_embedding(rel_name, model=model)
-
+        embeddings[rel_id] = get_last_token_embedding(relation_description, model=model)
     return embeddings
-
 
 
 def cal_ranks(scores, labels, filters):
