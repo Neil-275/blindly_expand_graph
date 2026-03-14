@@ -54,10 +54,6 @@ class ReasoningModuleFreebase:
         self.start_entities_key: str = start_entities_key
         self.crucial_triples_key: str = crucial_triples_key
 
-        self.rel_emb = self.sampler.rel_embs
-        self.gnn_model.assign_rel_emb(self.rel_emb)
-        self.adj_list = self.build_adjacency_list()
-
     def assign_query(self, query: dict):
         self.query = query
         self.sampler.assign_query(
@@ -72,6 +68,14 @@ class ReasoningModuleFreebase:
         # Convert to local indexing for GNN processing
         self.subgraph_data = self.sampler.sampleSubgraph()
         self.subgraph_data = self.convert_to_local_indexing()
+
+        # self.rel_emb = self.sampler.rel_embs
+        self.rel_emb = get_subgraph_relation_embeddings(
+            self.subgraph_data[2],  # subgraph_edges with global relation IDs
+            self.sampler.id2rel
+        )
+        self.gnn_model.assign_rel_emb(self.rel_emb)
+        self.adj_list = self.build_adjacency_list()
 
         # global_rel = subgraph_data[2][:,1]
         # _, reverse_out = torch.unique(global_rel, return_inverse=True)

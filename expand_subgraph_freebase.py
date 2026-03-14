@@ -2,7 +2,6 @@ import math
 import pickle as pkl
 import random
 from dotenv import load_dotenv
-import prompt_list
 import torch
 from utils import extract_numbers, extract_strings, extract_notations, run_llm, extract_answer,fuse_mean, fuse_rrf
 from typing import Literal
@@ -55,7 +54,7 @@ class ExpandSubgraphFreebase:
     # rel2id = {v:k for k,v in id2rel.items()}  
 
     adj = None
-    rel_embs = None
+    # rel_embs = None
     def __init__(
         self,
         # n_ent: int,
@@ -105,8 +104,10 @@ class ExpandSubgraphFreebase:
         self.model = SENTENCE_TRANSFORMER_MODEL.to(self.args.device)
 
         # some attributes for GoG simulation
-        self.id2rel: dict[int, str]
-        self.id2name: dict[int, str]
+        self.id2rel: dict[int, str] = {}
+        self.id2name: dict[int, str] = {}
+        self.start_entities: list[str] = []
+        self.rel_embs = None
 
     def extract_subobjectives(self, query):
         if self.use_sub_objectives_a:
@@ -239,6 +240,10 @@ class ExpandSubgraphFreebase:
                 #     start_entities.remove(head_id)
                 #     continue
                 # Query 1-hop triple from Freebase
+
+                if isinstance(head_id, np.str_):
+                    head_id = head_id.item()  # Convert numpy string to Python string
+
                 edges, relations = freebase_interface.get_1hop_triples(head_id)
                 # Filter out visited edges
                 filterd_edges = [
@@ -476,8 +481,8 @@ class ExpandSubgraphFreebase:
             ent_delta = sum(ent_delta_values) # tính offset.
 
             # Adding ent_delta to make node indices unique in the batch
-            sampled_edges[:,0] = node_index[sampled_edges[:,0]] + ent_delta
-            sampled_edges[:,2] = node_index[sampled_edges[:,2]] + ent_delta
+            sampled_edges[:, 0] = node_index[sampled_edges[:,0]] + ent_delta
+            sampled_edges[:, 2] = node_index[sampled_edges[:,2]] + ent_delta
             batch_sampled_edges.append(sampled_edges)
             edge_batch_idxs += [batch_idx] * int(sampled_edges.shape[0])
 
